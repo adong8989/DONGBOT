@@ -3,7 +3,7 @@ from flask import Flask, request, abort
 import os
 import logging
 
-from linebot.v3.webhook import WebhookHandler
+from linebot.v3.webhook import WebhookHandler, MessageEvent
 from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
 from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest
 
@@ -32,7 +32,7 @@ def callback():
         abort(400)
     return "OK"
 
-@handler.add(event_type="message")
+@handler.add(MessageEvent)
 def handle_message(event):
     user_id = event.source.user_id if event.source else "unknown"
     msg_type = event.message.type
