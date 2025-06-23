@@ -16,7 +16,7 @@ configuration = Configuration(access_token=channel_access_token)
 handler = WebhookHandler(channel_secret)
 
 # 記錄已開通的使用者 user_id
-approved_users = {
+approved_users = {"Ufbfcec5d31319e0df342aee12e202a1a","Uc1c5d11d69c610323daf1128c886e64d",
     # "Uxxxxxxxxxxxxxxxx"  # ← 把已開通者 ID 寫這裡
 }
 
