@@ -109,3 +109,43 @@ def handle_message(event):
         member_data = get_member(user_id)
 
         if msg == "我要開通":
+            if member_data:
+                reply = f"你已經申請過囉，狀態是：{member_data['status']}"
+            else:
+                add_member(user_id)
+                reply = f"申請成功！請管理員審核。你的 user_id 是：{user_id}"
+
+        elif not member_data or member_data["status"] != "approved":
+            reply = "您尚未開通，請先傳送「我要開通」來申請審核。"
+
+        elif "RTP" in msg or "轉" in msg:
+            reply = analyze_text_with_gpt(msg)
+
+        elif msg == "使用說明":
+            reply = (
+                "📘 使用說明：\n"
+                "請依下列格式輸入 RTP 資訊進行分析：\n\n"
+                "未開轉數 :\n"
+                "前一轉開 :\n"
+                "前二轉開 :\n"
+                "今日RTP%數 :\n"
+                "今日總下注額 :\n"
+                "30日RTP%數 :\n"
+                "30日總下注額 :\n\n"
+                "⚠️ 建議：\n"
+                "1️⃣ 先進入房間再截圖或記錄，避免房間被搶走。\n"
+                "2️⃣ 提供的數據越完整，分析越準確。\n"
+                "3️⃣ 分析結果會依據風險級別：高風險 / 中風險 / 低風險\n"
+                "4️⃣ 圖片分析功能測試中，建議先使用文字分析。"
+            )
+        else:
+            reply = "請傳送 RTP 資訊或點選下方快速選單進行操作。"
+
+        line_bot_api.reply_message(ReplyMessageRequest(
+            reply_token=event.reply_token,
+            messages=[TextMessage(text=reply, quick_reply=build_quick_reply())]
+        ))
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=True)
