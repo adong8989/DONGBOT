@@ -8,7 +8,6 @@ from linebot.v3.webhook import WebhookHandler, MessageEvent
 from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
 from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest, QuickReply, QuickReplyItem, MessageAction
 import hashlib
-import json
 import random
 
 # === 初始化 ===
@@ -53,13 +52,39 @@ def get_previous_reply(line_user_id, msg_hash):
 
 def fake_human_like_reply(msg):
     signals_pool = [
-        ("眼睛", 8), ("刀子", 8), ("弓箭", 8), ("蛇", 8),
-        ("紅寶石", 8), ("藍寶石", 8), ("黃寶石", 8), ("綠寶石", 8), ("紫寶石", 8),
+        ("眼睛", 7), ("刀子", 7), ("弓箭", 7), ("蛇", 7),
+        ("紅寶石", 7), ("藍寶石", 7), ("黃寶石", 7), ("綠寶石", 7), ("紫寶石", 7),
         ("綠倍球", 1), ("藍倍球", 1), ("紫倍球", 1), ("紅倍球", 1),
         ("聖甲蟲", 3)
     ]
-    chosen_signals = random.sample(signals_pool, k=2 if random.random() < 0.5 else 3)
-    signal_text = '\n'.join([f"{s[0]}：{random.randint(1, s[1])}顆" for s in chosen_signals])
+
+    def generate_signals():
+        chosen = random.sample(signals_pool, k=2 if random.random() < 0.5 else 3)
+        signals_with_counts = []
+        for s in chosen:
+            count = random.randint(1, s[1])
+            signals_with_counts.append((s[0], count))
+        return signals_with_counts
+
+    # 重試機制，最多5次避免死迴圈
+    for _ in range(5):
+        signals = generate_signals()
+        gem_signals = ["眼睛", "刀子", "弓箭", "蛇", "紅寶石", "藍寶石", "黃寶石", "綠寶石", "紫寶石"]
+        total_gems = sum(count for name, count in signals if name in gem_signals)
+        scarabs = sum(count for name, count in signals if name == "聖甲蟲")
+        if total_gems <= 7 and scarabs <= 3:
+            break
+    else:
+        signals = [
+            (name, min(count, 7) if name in gem_signals else count)
+            for name, count in signals
+        ]
+        signals = [
+            (name, min(count, 3) if name == "聖甲蟲" else count)
+            for name, count in signals
+        ]
+
+    signal_text = '\n'.join([f"{name}：{count}顆" for name, count in signals])
 
     lines = {line.split(':')[0].strip(): line.split(':')[1].strip() for line in msg.split('\n') if ':' in line}
     try:
