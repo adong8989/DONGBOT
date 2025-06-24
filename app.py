@@ -39,21 +39,25 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
-        # === 使用 Supabase 查詢會員狀態 ===
+        # 查詢會員資料
         member_data = get_member(user_id)
 
-        if msg == "我要開通":
-            if member_data:
-                reply_text = f"你已經申請過囉！狀態：{member_data['status']}"
-            else:
+        if not member_data:
+            # 沒有會員資料，表示尚未開通或申請過
+            if msg == "我要開通":
                 add_member(user_id)
-                reply_text = "申請成功，請等候管理員審核！"
-        elif not member_data:
-            reply_text = "您尚未開通，請先輸入「我要開通」申請。"
-        elif "RTP" in msg:
-            reply_text = "這是 RTP 文字分析的回覆（尚未實作）。"
+                reply_text = "你已申請開通，請等待管理員審核。"
+            else:
+                reply_text = "您尚未開通，請傳送「我要開通」申請審核。"
         else:
-            reply_text = "功能選單：圖片分析 / 文字分析 / 我要開通"
+            # 有會員資料，依狀態回覆
+            status = member_data.get("status", "未知狀態")
+            if msg == "我要開通":
+                reply_text = f"你已經申請過囉！狀態：{status}"
+            elif "RTP" in msg:
+                reply_text = "這是 RTP 文字分析的回覆（尚未實作）。"
+            else:
+                reply_text = "功能選單：圖片分析 / 文字分析 / 我要開通"
 
         line_bot_api.reply_message(ReplyMessageRequest(
             reply_token=event.reply_token,
