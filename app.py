@@ -3,11 +3,14 @@ from flask import Flask, request, abort
 import os
 import logging
 from dotenv import load_dotenv
-from supabase import create_client  # 修正 import 錯誤
+from supabase import create_client
 from linebot.v3.webhook import WebhookHandler, MessageEvent
 from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
-from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest, QuickReply, QuickReplyItem, MessageAction
-import openai
+from linebot.v3.messaging.models import (
+    TextMessage, ReplyMessageRequest,
+    QuickReply, QuickReplyItem, MessageAction, URIAction
+)
+from openai import OpenAI
 
 # === 初始化 ===
 load_dotenv()
@@ -27,7 +30,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-openai.api_key = OPENAI_API_KEY
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = Flask(__name__)
 
@@ -63,7 +66,7 @@ def analyze_text_with_gpt(msg):
     )
     prompt = instruction + "\n\n分析內容：\n" + msg
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}]
         )
@@ -75,7 +78,7 @@ def analyze_text_with_gpt(msg):
 def build_quick_reply():
     return QuickReply(items=[
         QuickReplyItem(action=MessageAction(label="🔓 我要開通", text="我要開通")),
-        QuickReplyItem(action=MessageAction(label="🧠 文字分析", text="文字分析範例")),
+        QuickReplyItem(action=URIAction(label="📝 註冊會員", uri="https://wek002.welove777.com")),
         QuickReplyItem(action=MessageAction(label="📘 使用說明", text="使用說明"))
     ])
 
@@ -103,47 +106,6 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
-        # 會員資料
         member_data = get_member(user_id)
 
         if msg == "我要開通":
-            if member_data:
-                reply = f"你已經申請過囉，狀態是：{member_data['status']}"
-            else:
-                add_member(user_id)
-                reply = f"申請成功！請管理員審核。你的 user_id 是：{user_id}"
-
-        elif not member_data or member_data["status"] != "approved":
-            reply = "您尚未開通，請先傳送「我要開通」來申請審核。"
-
-        elif "RTP" in msg or "轉" in msg:
-            reply = analyze_text_with_gpt(msg)
-
-        elif msg == "使用說明":
-            reply = (
-                "📘 使用說明：\n"
-                "請依下列格式輸入 RTP 資訊進行分析：\n\n"
-                "未開轉數 :\n"
-                "前一轉開 :\n"
-                "前二轉開 :\n"
-                "今日RTP%數 :\n"
-                "今日總下注額 :\n"
-                "30日RTP%數 :\n"
-                "30日總下注額 :\n\n"
-                "⚠️ 建議：\n"
-                "1️⃣ 先進入房間再截圖或記錄，避免房間被搶走。\n"
-                "2️⃣ 提供的數據越完整，分析越準確。\n"
-                "3️⃣ 分析結果會依據風險級別：高風險 / 中風險 / 低風險\n"
-                "4️⃣ 圖片分析功能測試中，建議先使用文字分析。"
-            )
-        else:
-            reply = "請傳送 RTP 資訊或點選下方快速選單進行操作。"
-
-        line_bot_api.reply_message(ReplyMessageRequest(
-            reply_token=event.reply_token,
-            messages=[TextMessage(text=reply, quick_reply=build_quick_reply())]
-        ))
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=True)
