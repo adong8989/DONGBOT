@@ -3,14 +3,10 @@ from flask import Flask, request, abort
 import os
 import logging
 from dotenv import load_dotenv
-from supabase import create_client
+from supabase import create_client  # 修正 import 錯誤
 from linebot.v3.webhook import WebhookHandler, MessageEvent
 from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
-from linebot.v3.messaging.models import (
-    TextMessage, ReplyMessageRequest,
-    QuickReply, QuickReplyItem, MessageAction, URIAction
-)
-from openai import OpenAI
+from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest, QuickReply, QuickReplyItem, MessageAction
 
 # === 初始化 ===
 load_dotenv()
@@ -20,7 +16,6 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # 驗證環境變數
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -30,7 +25,6 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = Flask(__name__)
 
@@ -48,37 +42,37 @@ def add_member(line_user_id, code="SET2024"):
     }).execute()
     return res.data
 
-# === 文字分析功能 ===
-def analyze_text_with_gpt(msg):
-    instruction = (
-        "你是一位RTP分析顧問，請根據以下數據回覆建議：\n"
-        "1. 是否建議進場（高、中、低風險級別）\n"
-        "2. 建議轉幾次\n"
-        "3. 給出簡短原因\n\n"
-        "格式如下：\n"
-        "未開轉數 :\n"
-        "前一轉開 :\n"
-        "前二轉開 :\n"
-        "今日RTP%數 :\n"
-        "今日總下注額 :\n"
-        "30日RTP%數 :\n"
-        "30日總下注額 :\n"
-    )
-    prompt = instruction + "\n\n分析內容：\n" + msg
+# === 替代 GPT 模擬分析 ===
+def fake_human_like_reply(msg):
+    import random
+    signals_pool = ["眼睛", "刀子", "弓箭", "蛇", "紅寶石", "藍寶石", "黃寶石", "綠寶石", "紫寶石", "綠倍球", "藍倍球", "紫倍球", "紅倍球", "聖甲蟲"]
+    chosen_signals = random.sample(signals_pool, k=2 if random.random() < 0.5 else 3)
+
+    # 風險判斷簡易規則
+    lines = {line.split(':')[0].strip(): line.split(':')[1].strip() for line in msg.split('\n') if ':' in line}
     try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"分析錯誤：{str(e)}"
+        rtp_today = int(lines.get("今日RTP%數", 0))
+        bets_today = int(lines.get("今日總下注額", 0))
+        not_open = int(lines.get("未開轉數", 0))
+    except:
+        return "❌ 分析失敗，請確認格式與數值是否正確。"
+
+    risk = "高風險" if rtp_today > 110 else ("低風險" if rtp_today < 85 and bets_today > 80000 else "中風險")
+    advice = "建議先觀察看看或換房比較保險～" if risk == "高風險" else ("可以考慮進場屯房喔～" if risk == "低風險" else "可以先小額轉轉看，觀察是否有回分。")
+
+    return (
+        f"📊 初步分析結果如下：\n"
+        f"風險評估：{risk}\n"
+        f"建議策略：{advice}\n"
+        f"推薦訊號組合：{', '.join(chosen_signals)}\n"
+        f"✨ 若需進一步打法策略，可聯絡阿東超人：LINE ID adong8989"
+    )
 
 # === 快速選單 ===
 def build_quick_reply():
     return QuickReply(items=[
         QuickReplyItem(action=MessageAction(label="🔓 我要開通", text="我要開通")),
-        QuickReplyItem(action=URIAction(label="📝 註冊會員", uri="https://wek002.welove777.com")),
+        QuickReplyItem(action=MessageAction(label="🧠 註冊按我", text="https://wek002.welove777.com")),
         QuickReplyItem(action=MessageAction(label="📘 使用說明", text="使用說明"))
     ])
 
@@ -106,6 +100,7 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
+        # 會員資料
         member_data = get_member(user_id)
 
         if msg == "我要開通":
@@ -119,7 +114,7 @@ def handle_message(event):
             reply = "您尚未開通，請先傳送「我要開通」來申請審核。"
 
         elif "RTP" in msg or "轉" in msg:
-            reply = analyze_text_with_gpt(msg)
+            reply = fake_human_like_reply(msg)
 
         elif msg == "使用說明":
             reply = (
