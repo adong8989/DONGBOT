@@ -1,7 +1,7 @@
 
 Flask==2.2.5
 line-bot-sdk==3.17.1
-supabase-py==2.2.0
+supabase==2.2.0
 pytesseract
 Pillow
 openai
