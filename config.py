@@ -1,2 +1,4 @@
-SUPABASE_URL = "https://vfhsoejgxdtewaovqtii.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZmaHNvZWpneGR0ZXdhb3ZxdGlpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTA3NTEwNTAsImV4cCI6MjA2NjMyNzA1MH0.5moSf3nuElDZuCMh60BDNuNYNscm0wP9aLLi2mqNxIM"
+import os
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
