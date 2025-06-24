@@ -3,7 +3,7 @@ from flask import Flask, request, abort
 import os
 import logging
 from dotenv import load_dotenv
-from supabase.client import create_client
+from supabase import create_client  # 修正 import 錯誤
 from linebot.v3.webhook import WebhookHandler, MessageEvent
 from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
 from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest, QuickReply, QuickReplyItem, MessageAction
@@ -119,9 +119,9 @@ def handle_message(event):
         elif "RTP" in msg or "轉" in msg:
             reply = analyze_text_with_gpt(msg)
 
-        else:
+        elif msg == "使用說明":
             reply = (
-                "📌 使用說明：\n"
+                "📘 使用說明：\n"
                 "請依下列格式輸入 RTP 資訊進行分析：\n\n"
                 "未開轉數 :\n"
                 "前一轉開 :\n"
@@ -134,8 +134,10 @@ def handle_message(event):
                 "1️⃣ 先進入房間再截圖或記錄，避免房間被搶走。\n"
                 "2️⃣ 提供的數據越完整，分析越準確。\n"
                 "3️⃣ 分析結果會依據風險級別：高風險 / 中風險 / 低風險\n"
-                "4️⃣ 若有圖片需求也可以提供，我會幫你準備 OCR 方案。"
+                "4️⃣ 圖片分析功能測試中，建議先使用文字分析。"
             )
+        else:
+            reply = "請傳送 RTP 資訊或點選下方快速選單進行操作。"
 
         line_bot_api.reply_message(ReplyMessageRequest(
             reply_token=event.reply_token,
@@ -144,4 +146,4 @@ def handle_message(event):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=True)
