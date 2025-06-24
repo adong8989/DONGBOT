@@ -42,23 +42,23 @@ def handle_message(event):
         # === 使用 Supabase 查詢會員狀態 ===
         member_data = get_member(user_id)
 
-    if msg == "我要開通":
-        if member_data:
-            reply_text = f"你已經申請過囉！狀態：{member_data['status']}"
+        if msg == "我要開通":
+            if member_data:
+                reply_text = f"你已經申請過囉！狀態：{member_data['status']}"
+            else:
+                add_member(user_id)
+                reply_text = "申請成功，請等候管理員審核！"
+        elif not member_data:
+            reply_text = "您尚未開通，請先輸入「我要開通」申請。"
+        elif "RTP" in msg:
+            reply_text = "這是 RTP 文字分析的回覆（尚未實作）。"
         else:
-            add_member(user_id)
-            reply_text = "申請成功，請等候管理員審核！"
-    elif not member_data:
-        reply_text = "您尚未開通，請先輸入「我要開通」申請。"
-    elif "RTP" in msg:
-        reply_text = "這是 RTP 文字分析的回覆（尚未實作）。"
-    else:
-        reply_text = "功能選單：圖片分析 / 文字分析 / 我要開通"
+            reply_text = "功能選單：圖片分析 / 文字分析 / 我要開通"
 
-line_bot_api.reply_message(ReplyMessageRequest(
-    reply_token=event.reply_token,
-    messages=[TextMessage(text=reply_text)]
-))
+        line_bot_api.reply_message(ReplyMessageRequest(
+            reply_token=event.reply_token,
+            messages=[TextMessage(text=reply_text)]
+        ))
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
