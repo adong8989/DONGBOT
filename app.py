@@ -1,4 +1,4 @@
-
+from db import get_member, add_member  
 from flask import Flask, request, abort
 import os
 import logging
@@ -42,18 +42,29 @@ def handle_message(event):
 
     msg = event.message.text.strip()
 
-    with ApiClient(configuration) as api_client:
+ with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
 
+        # 從 Supabase 取得會員資料
+        member = get_member(user_id)
+        member_status = member["status"] if member else None
+
         if msg == "我要開通":
-            reply_text = f"申請成功，你的 user_id 是：{user_id}，請提供給管理員審核。"
-            print(f"[DEBUG] 收到開通申請 user_id: {user_id}")
-        elif user_id not in approved_users:
-            reply_text = "您尚未開通，請傳送「我要開通」申請審核。"
+            if not member:
+                add_member(user_id)
+                reply_text = f"✅ 已收到開通申請\n你的 user_id 是：{user_id}\n請提供給管理員審核開通。"
+                print(f"[DEBUG] 收到開通申請 user_id: {user_id}")
+            else:
+                reply_text = "你已送出過申請，請等待管理員審核。"
+        
+        elif member_status != "active":
+            reply_text = "⛔ 你尚未通過會員審核，請傳送「我要開通」申請。"
+
         elif "RTP" in msg:
             reply_text = "這是 RTP 文字分析的回覆（尚未實作）。"
+
         else:
-            reply_text = "功能選單：圖片分析 / 文字分析 / 我要開通"
+            reply_text = "功能選單：\n- 圖片分析\n- RTP推薦\n- 我要開通"
 
         line_bot_api.reply_message(ReplyMessageRequest(
             reply_token=event.reply_token,
