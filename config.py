@@ -1,2 +1,2 @@
-SUPABASE_URL = "https://YOUR_PROJECT.supabase.co"
-SUPABASE_KEY = "你的 anon key 或 service_role key"
+SUPABASE_URL = "https://vfhsoejgxdtewaovqtii.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZmaHNvZWpneGR0ZXdhb3ZxdGlpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTA3NTEwNTAsImV4cCI6MjA2NjMyNzA1MH0.5moSf3nuElDZuCMh60BDNuNYNscm0wP9aLLi2mqNxIM"
