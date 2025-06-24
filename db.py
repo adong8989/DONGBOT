@@ -27,3 +27,10 @@ def add_member(line_user_id, code="SET2024"):
         "status": "pending"
     }).execute()
     return response.data
+
+def update_member_status(line_user_id, new_status):
+    response = supabase.table('members') \
+        .update({"status": new_status}) \
+        .eq('line_user_id', line_user_id) \
+        .execute()
+    return response.data
