@@ -3,37 +3,35 @@ from flask import Flask, request, abort
 import os
 import logging
 from dotenv import load_dotenv
-from supabase import create_client  # 修正 import 錯誤
+from supabase import create_client
 from linebot.v3.webhook import WebhookHandler, MessageEvent
 from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
 from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest, QuickReply, QuickReplyItem, MessageAction
+import hashlib
+import json
+import random
 
 # === 初始化 ===
 load_dotenv()
 
-# 環境變數
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# 驗證環境變數
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("Supabase URL 或 KEY 尚未正確設定。請確認 .env 檔案或系統環境變數。")
 
-# 初始化 SDK
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = Flask(__name__)
 
-# === 查會員 ===
 def get_member(line_user_id):
     res = supabase.table("members").select("status").eq("line_user_id", line_user_id).maybe_single().execute()
     return res.data if res and res.data else None
 
-# === 新增會員 ===
 def add_member(line_user_id, code="SET2024"):
     res = supabase.table("members").insert({
         "line_user_id": line_user_id,
@@ -42,13 +40,27 @@ def add_member(line_user_id, code="SET2024"):
     }).execute()
     return res.data
 
-# === 替代 GPT 模擬分析（進階風險評估） ===
-def fake_human_like_reply(msg):
-    import random
-    signals_pool = ["眼睛", "刀子", "弓箭", "蛇", "紅寶石", "藍寶石", "黃寶石", "綠寶石", "紫寶石", "綠倍球", "藍倍球", "紫倍球", "紅倍球", "聖甲蟲"]
-    chosen_signals = random.sample(signals_pool, k=2 if random.random() < 0.5 else 3)
+def save_analysis_log(line_user_id, msg_hash, reply):
+    supabase.table("analysis_logs").insert({
+        "line_user_id": line_user_id,
+        "msg_hash": msg_hash,
+        "reply": reply
+    }).execute()
 
-    # 解析使用者輸入
+def get_previous_reply(line_user_id, msg_hash):
+    res = supabase.table("analysis_logs").select("reply").eq("line_user_id", line_user_id).eq("msg_hash", msg_hash).maybe_single().execute()
+    return res.data["reply"] if res and res.data else None
+
+def fake_human_like_reply(msg):
+    signals_pool = [
+        ("眼睛", 8), ("刀子", 8), ("弓箭", 8), ("蛇", 8),
+        ("紅寶石", 8), ("藍寶石", 8), ("黃寶石", 8), ("綠寶石", 8), ("紫寶石", 8),
+        ("綠倍球", 1), ("藍倍球", 1), ("紫倍球", 1), ("紅倍球", 1),
+        ("聖甲蟲", 3)
+    ]
+    chosen_signals = random.sample(signals_pool, k=2 if random.random() < 0.5 else 3)
+    signal_text = '\n'.join([f"{s[0]}：{random.randint(1, s[1])}顆" for s in chosen_signals])
+
     lines = {line.split(':')[0].strip(): line.split(':')[1].strip() for line in msg.split('\n') if ':' in line}
     try:
         not_open = int(lines.get("未開轉數", 0))
@@ -61,7 +73,6 @@ def fake_human_like_reply(msg):
     except:
         return "❌ 分析失敗，請確認格式與數值是否正確。"
 
-    # 複雜化風險評估邏輯
     risk_score = 0
     if rtp_today > 120: risk_score += 3
     elif rtp_today > 110: risk_score += 2
@@ -79,7 +90,6 @@ def fake_human_like_reply(msg):
     if rtp_30 < 85: risk_score += 1
     elif rtp_30 > 100: risk_score -= 1
 
-    # 對應風險分數給等級
     if risk_score >= 4:
         risk = "🚨 高風險"
         advice = "這房可能已被爆分過，建議平轉100轉如回分不好就換房或小買一場免遊試試看。"
@@ -94,11 +104,10 @@ def fake_human_like_reply(msg):
         f"📊 初步分析結果如下：\n"
         f"風險評估：{risk}\n"
         f"建議策略：{advice}\n"
-        f"推薦訊號組合：{', '.join(chosen_signals)}\n"
+        f"推薦訊號組合：\n{signal_text}\n"
         f"✨ 若需進一步打法策略，可聯絡阿東超人：LINE ID adong8989"
     )
 
-# === 快速選單 ===
 def build_quick_reply():
     return QuickReply(items=[
         QuickReplyItem(action=MessageAction(label="🔓 我要開通", text="我要開通")),
@@ -124,13 +133,13 @@ def handle_message(event):
     msg_type = event.message.type
 
     if msg_type != "text":
-        return  # 只處理文字訊息
+        return
 
     msg = event.message.text.strip()
+    msg_hash = hashlib.sha256(msg.encode()).hexdigest()
+
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
-
-        # 會員資料
         member_data = get_member(user_id)
 
         if msg == "我要開通":
@@ -144,7 +153,12 @@ def handle_message(event):
             reply = "您尚未開通，請先傳送「我要開通」來申請審核。"
 
         elif "RTP" in msg or "轉" in msg:
-            reply = fake_human_like_reply(msg)
+            previous = get_previous_reply(user_id, msg_hash)
+            if previous:
+                reply = f"這份資料已經分析過囉，請勿重複提交相同內容唷：\n\n{previous}"
+            else:
+                reply = fake_human_like_reply(msg)
+                save_analysis_log(user_id, msg_hash, reply)
 
         elif msg == "使用說明":
             reply = (
@@ -163,6 +177,7 @@ def handle_message(event):
                 "3️⃣ 分析結果會依據房間風險級別：高風險 / 中風險 / 低風險\n"
                 "4️⃣ 房間所有的資訊只需提供小數點前面的數字不能加小數點與 % 符號。"
             )
+
         else:
             reply = "請傳送房間資訊或點選下方快速選單進行操作。"
 
