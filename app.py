@@ -42,23 +42,53 @@ def add_member(line_user_id, code="SET2024"):
     }).execute()
     return res.data
 
-# === 替代 GPT 模擬分析 ===
+# === 替代 GPT 模擬分析（進階風險評估） ===
 def fake_human_like_reply(msg):
     import random
     signals_pool = ["眼睛", "刀子", "弓箭", "蛇", "紅寶石", "藍寶石", "黃寶石", "綠寶石", "紫寶石", "綠倍球", "藍倍球", "紫倍球", "紅倍球", "聖甲蟲"]
     chosen_signals = random.sample(signals_pool, k=2 if random.random() < 0.5 else 3)
 
-    # 風險判斷簡易規則
+    # 解析使用者輸入
     lines = {line.split(':')[0].strip(): line.split(':')[1].strip() for line in msg.split('\n') if ':' in line}
     try:
+        not_open = int(lines.get("未開轉數", 0))
+        prev1 = int(lines.get("前一轉開", 0))
+        prev2 = int(lines.get("前二轉開", 0))
         rtp_today = int(lines.get("今日RTP%數", 0))
         bets_today = int(lines.get("今日總下注額", 0))
-        not_open = int(lines.get("未開轉數", 0))
+        rtp_30 = int(lines.get("30日RTP%數", 0))
+        bets_30 = int(lines.get("30日總下注額", 0))
     except:
         return "❌ 分析失敗，請確認格式與數值是否正確。"
 
-    risk = "高風險" if rtp_today > 110 else ("低風險" if rtp_today < 85 and bets_today > 80000 else "中風險")
-    advice = "建議先觀察看看或換房比較保險～" if risk == "高風險" else ("可以考慮進場屯房喔～" if risk == "低風險" else "可以先小額轉轉看，觀察是否有回分。")
+    # 複雜化風險評估邏輯
+    risk_score = 0
+    if rtp_today > 120: risk_score += 3
+    elif rtp_today > 110: risk_score += 2
+    elif rtp_today < 90: risk_score -= 1
+
+    if bets_today >= 80000: risk_score -= 1
+    elif bets_today < 30000: risk_score += 1
+
+    if not_open > 250: risk_score += 2
+    elif not_open < 100: risk_score -= 1
+
+    if prev1 > 50: risk_score += 1
+    if prev2 > 60: risk_score += 1
+
+    if rtp_30 < 85: risk_score += 1
+    elif rtp_30 > 100: risk_score -= 1
+
+    # 對應風險分數給等級
+    if risk_score >= 4:
+        risk = "🚨 高風險"
+        advice = "這房可能已被爆分過，建議平轉100轉如回分不好就換房或小買一場免遊試試看。"
+    elif risk_score >= 2:
+        risk = "⚠️ 中風險"
+        advice = "可以先小注額試轉觀察平轉回分狀況，回分可能不錯但仍需謹慎。"
+    else:
+        risk = "✅ 低風險"
+        advice = "看起來有機會，建議先進場屯房50-100轉看回分，回分可以的話就買一場免遊看看。"
 
     return (
         f"📊 初步分析結果如下：\n"
@@ -105,10 +135,10 @@ def handle_message(event):
 
         if msg == "我要開通":
             if member_data:
-                reply = f"你已經申請過囉，狀態是：{member_data['status']}"
+                reply = f"你已經申請過囉趕緊找管理員審核LINE ID :adong8989，狀態是：{member_data['status']}"
             else:
                 add_member(user_id)
-                reply = f"申請成功！請管理員審核。你的 user_id 是：{user_id}"
+                reply = f"申請成功！請加管理員LINE:adong8989給你的USER ID 申請審核。你的 user_id 是：{user_id}"
 
         elif not member_data or member_data["status"] != "approved":
             reply = "您尚未開通，請先傳送「我要開通」來申請審核。"
@@ -128,13 +158,13 @@ def handle_message(event):
                 "30日RTP%數 :\n"
                 "30日總下注額 :\n\n"
                 "⚠️ 建議：\n"
-                "1️⃣ 先進入房間再截圖或記錄，避免房間被搶走。\n"
+                "1️⃣ 先進入房間再來使用分析，可避免房間被搶走哦。\n"
                 "2️⃣ 提供的數據越完整，分析越準確。\n"
-                "3️⃣ 分析結果會依據風險級別：高風險 / 中風險 / 低風險\n"
-                "4️⃣ 圖片分析功能測試中，建議先使用文字分析。"
+                "3️⃣ 分析結果會依據房間風險級別：高風險 / 中風險 / 低風險\n"
+                "4️⃣ 房間所有的資訊只需提供小數點前面的數字不能加小數點與 % 符號。"
             )
         else:
-            reply = "請傳送 RTP 資訊或點選下方快速選單進行操作。"
+            reply = "請傳送房間資訊或點選下方快速選單進行操作。"
 
         line_bot_api.reply_message(ReplyMessageRequest(
             reply_token=event.reply_token,
