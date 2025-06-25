@@ -8,6 +8,7 @@ from linebot.v3.webhook import WebhookHandler, MessageEvent
 from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
 from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest, QuickReply, QuickReplyItem, MessageAction
 import hashlib
+import json
 import random
 
 # === 初始化 ===
@@ -50,41 +51,29 @@ def get_previous_reply(line_user_id, msg_hash):
     res = supabase.table("analysis_logs").select("reply").eq("line_user_id", line_user_id).eq("msg_hash", msg_hash).maybe_single().execute()
     return res.data["reply"] if res and res.data else None
 
-def fake_human_like_reply(msg):
+def save_signal_stats(signals):
+    for s, qty in signals:
+        supabase.table("signal_stats").insert({
+            "signal_name": s,
+            "quantity": qty
+        }).execute()
+
+def update_member_preference(line_user_id, strategy):
+    supabase.table("member_preferences").upsert({
+        "line_user_id": line_user_id,
+        "preferred_strategy": strategy
+    }, on_conflict=["line_user_id"]).execute()
+
+def fake_human_like_reply(msg, line_user_id):
     signals_pool = [
         ("眼睛", 7), ("刀子", 7), ("弓箭", 7), ("蛇", 7),
         ("紅寶石", 7), ("藍寶石", 7), ("黃寶石", 7), ("綠寶石", 7), ("紫寶石", 7),
-        ("綠倍球", 1), ("藍倍球", 1), ("紫倍球", 1), ("紅倍球", 1),
+        ("綠倍數球", 1), ("藍倍數球", 1), ("紫倍數球", 1), ("紅倍數球", 1),
         ("聖甲蟲", 3)
     ]
-
-    def generate_signals():
-        chosen = random.sample(signals_pool, k=2 if random.random() < 0.5 else 3)
-        signals_with_counts = []
-        for s in chosen:
-            count = random.randint(1, s[1])
-            signals_with_counts.append((s[0], count))
-        return signals_with_counts
-
-    # 重試機制，最多5次避免死迴圈
-    for _ in range(5):
-        signals = generate_signals()
-        gem_signals = ["眼睛", "刀子", "弓箭", "蛇", "紅寶石", "藍寶石", "黃寶石", "綠寶石", "紫寶石"]
-        total_gems = sum(count for name, count in signals if name in gem_signals)
-        scarabs = sum(count for name, count in signals if name == "聖甲蟲")
-        if total_gems <= 7 and scarabs <= 3:
-            break
-    else:
-        signals = [
-            (name, min(count, 7) if name in gem_signals else count)
-            for name, count in signals
-        ]
-        signals = [
-            (name, min(count, 3) if name == "聖甲蟲" else count)
-            for name, count in signals
-        ]
-
-    signal_text = '\n'.join([f"{name}：{count}顆" for name, count in signals])
+    chosen_signals = random.sample(signals_pool, k=2 if random.random() < 0.5 else 3)
+    signal_text = '\n'.join([f"{s[0]}：{random.randint(1, s[1])}顆" for s in chosen_signals])
+    save_signal_stats(chosen_signals)
 
     lines = {line.split(':')[0].strip(): line.split(':')[1].strip() for line in msg.split('\n') if ':' in line}
     try:
@@ -117,13 +106,18 @@ def fake_human_like_reply(msg):
 
     if risk_score >= 4:
         risk = "🚨 高風險"
+        strategy = "高風險-建議平轉100轉後觀察"
         advice = "這房可能已被爆分過，建議平轉100轉如回分不好就換房或小買一場免遊試試看。"
     elif risk_score >= 2:
         risk = "⚠️ 中風險"
+        strategy = "中風險-小注額觀察"
         advice = "可以先小注額試轉觀察平轉回分狀況，回分可能不錯但仍需謹慎。"
     else:
         risk = "✅ 低風險"
+        strategy = "低風險-可屯房買免遊"
         advice = "看起來有機會，建議先進場屯房50-100轉看回分，回分可以的話就買一場免遊看看。"
+
+    update_member_preference(line_user_id, strategy)
 
     return (
         f"📊 初步分析結果如下：\n"
@@ -182,7 +176,7 @@ def handle_message(event):
             if previous:
                 reply = f"這份資料已經分析過囉，請勿重複提交相同內容唷：\n\n{previous}"
             else:
-                reply = fake_human_like_reply(msg)
+                reply = fake_human_like_reply(msg, user_id)
                 save_analysis_log(user_id, msg_hash, reply)
 
         elif msg == "使用說明":
@@ -212,5 +206,8 @@ def handle_message(event):
         ))
 
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=True)
+
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
