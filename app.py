@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 from linebot.v3.webhook import WebhookHandler, MessageEvent
 from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
-from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest, QuickReply, QuickReplyItem, MessageAction
+from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest, QuickReply, QuickReplyItem, MessageAction, URIAction
 import hashlib
 import json
 import random
@@ -130,8 +130,17 @@ def fake_human_like_reply(msg, line_user_id):
 def build_quick_reply():
     return QuickReply(items=[
         QuickReplyItem(action=MessageAction(label="🔓 我要開通", text="我要開通")),
-        QuickReplyItem(action=MessageAction(label="🧠 註冊按我", text="https://wek002.welove777.com")),
-        QuickReplyItem(action=MessageAction(label="📘 使用說明", text="使用說明"))
+        QuickReplyItem(action=URIAction(label="🧠 註冊按我", uri="https://wek002.welove777.com")),
+        QuickReplyItem(action=MessageAction(label="📘 使用說明", text="使用說明")),
+        QuickReplyItem(action=MessageAction(label="📋 房間資訊表格", text=(
+            "未開轉數 :\n"
+            "前一轉開 :\n"
+            "前二轉開 :\n"
+            "今日RTP%數 :\n"
+            "今日總下注額 :\n"
+            "30日RTP%數 :\n"
+            "30日總下注額 :"
+        )))
     ])
 
 @app.route("/callback", methods=["POST"])
@@ -194,7 +203,8 @@ def handle_message(event):
                 "1️⃣ 先進入房間再來使用分析，可避免房間被搶走哦。\n"
                 "2️⃣ 提供的數據越完整，分析越準確。\n"
                 "3️⃣ 分析結果會依據房間風險級別：高風險 / 中風險 / 低風險\n"
-                "4️⃣ 房間所有的資訊只需提供小數點前面的數字不能加小數點與 % 符號。"
+                "4️⃣ 房間所有的資訊只需提供小數點前面的數字不能加小數點與 % 符號。\n"
+                "5️⃣ 房間資訊範例圖請按 (房間資訊表格) 按鈕索取。"
             )
 
         else:
@@ -206,8 +216,5 @@ def handle_message(event):
         ))
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=True)
-
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
