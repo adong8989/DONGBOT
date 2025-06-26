@@ -85,7 +85,7 @@ def fake_human_like_reply(msg, line_user_id):
         rtp_30 = int(lines.get("30日RTP%數", 0))
         bets_30 = int(lines.get("30日總下注額", 0))
     except:
-        return "❌ 分析失敗，請確認格式與數值是否正確。"
+        return "❌ 分析失敗，請確認格式與數值(不能有小數點)是否正確。"
 
     risk_score = 0
     if rtp_today > 120: risk_score += 3
@@ -132,15 +132,7 @@ def build_quick_reply():
         QuickReplyItem(action=MessageAction(label="🔓 我要開通", text="我要開通")),
         QuickReplyItem(action=URIAction(label="🧠 註冊按我", uri="https://wek002.welove777.com")),
         QuickReplyItem(action=MessageAction(label="📘 使用說明", text="使用說明")),
-        QuickReplyItem(action=MessageAction(label="📋 房間資訊表格", text=(
-            "未開轉數 :\n"
-            "前一轉開 :\n"
-            "前二轉開 :\n"
-            "今日RTP%數 :\n"
-            "今日總下注額 :\n"
-            "30日RTP%數 :\n"
-            "30日總下注額 :"
-        )))
+        QuickReplyItem(action=MessageAction(label="📋 房間資訊表格", text="房間資訊表格"))
     ])
 
 @app.route("/callback", methods=["POST"])
@@ -172,10 +164,24 @@ def handle_message(event):
 
         if msg == "我要開通":
             if member_data:
-                reply = f"你已經申請過囉趕緊找管理員審核LINE ID :adong8989，狀態是：{member_data['status']}"
+                if member_data["status"] == "approved":
+                    reply = "✅ 您已開通完成，歡迎使用選房分析功能。"
+                else:
+                    reply = f"你已經申請過囉趕緊找管理員審核 LINE ID :adong8989，狀態是：{member_data['status']}"
             else:
                 add_member(user_id)
-                reply = f"申請成功！請加管理員LINE:adong8989給你的USER ID 申請審核。你的 user_id 是：{user_id}"
+                reply = f"申請成功！請加管理員 LINE:adong8989 給你的 USER ID 申請審核。你的 user_id 是：{user_id}"
+
+        elif msg == "房間資訊表格":
+            reply = (
+                "未開轉數 :\n"
+                "前一轉開 :\n"
+                "前二轉開 :\n"
+                "今日RTP%數 :\n"
+                "今日總下注額 :\n"
+                "30日RTP%數 :\n"
+                "30日總下注額 :"
+            )
 
         elif not member_data or member_data["status"] != "approved":
             reply = "您尚未開通，請先傳送「我要開通」來申請審核。"
@@ -218,3 +224,4 @@ def handle_message(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
+
