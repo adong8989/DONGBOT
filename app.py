@@ -1,4 +1,3 @@
-# app.py
 from flask import Flask, request, abort
 import os
 import logging
@@ -11,7 +10,7 @@ from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest, QuickR
 import hashlib
 import random
 
-# === 初始化環境變數 ===
+# 初始化環境變數
 load_dotenv()
 
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
@@ -20,16 +19,13 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 if not (SUPABASE_URL and SUPABASE_KEY):
-    raise ValueError("Supabase URL 或 KEY 尚未正確設定。請確認 .env 檔案或系統環境變數。")
+    raise ValueError("Supabase URL 或 KEY 尚未正確設定。")
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = Flask(__name__)
-ADMIN_USER_IDS = ["U34ea24babae0f2a6cbc09e02be4083d8"]  # 你的 LINE 管理員 user ID
-
-# === 工具函式 ===
 
 def get_member(user_id):
     try:
@@ -38,6 +34,7 @@ def get_member(user_id):
             .eq("line_user_id", user_id) \
             .maybe_single() \
             .execute()
+        print("DEBUG get_member response:", res.data)
         if res.status_code == 204 or not res.data:
             return None
         return res.data
@@ -56,6 +53,7 @@ def add_member(user_id):
             "usage_quota": 50,
             "last_reset_at": now_iso
         }).execute()
+        print("DEBUG add_member response:", res.data)
         return res.data
     except Exception as e:
         print(f"Supabase 新增會員錯誤: {e}")
@@ -72,6 +70,7 @@ def reset_quota_if_needed(member):
                 "usage_quota": 50,
                 "last_reset_at": now.isoformat()
             }).eq("line_user_id", member["line_user_id"]).execute()
+            print("DEBUG reset_quota_if_needed update response:", res.data)
             if res.status_code == 200:
                 member["usage_quota"] = 50
                 member["last_reset_at"] = now.isoformat()
@@ -172,7 +171,10 @@ def build_quick_reply():
         QuickReplyItem(action=MessageAction(label="📋 房間資訊表格", text="房間資訊表格"))
     ])
 
-# === Flask 路由 ===
+@app.route("/")
+def home():
+    return "LINE Bot is running."
+
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
@@ -193,8 +195,7 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         member = get_member(user_id)
-        print(f"DEBUG get_member 返回資料：{member}")
-
+        print("DEBUG member:", member)  # 重要除錯輸出
         if not member:
             if msg == "我要開通":
                 add_member(user_id)
@@ -202,46 +203,44 @@ def handle_message(event):
             else:
                 reply = "您尚未開通，請先傳送「我要開通」。"
         else:
-            print(f"DEBUG member status: {member.get('status')}")
             member = reset_quota_if_needed(member)
-            if msg == "我要開通":
-                if member.get("status") == "approved":
-                    reply = "✅ 您已開通完成，歡迎使用。"
-                else:
-                    reply = f"你已經申請過囉，狀態是：{member['status']}"
-            elif msg == "房間資訊表格":
-                reply = (
-                    "未開轉數 :\n前一轉開 :\n前二轉開 :\n"
-                    "今日RTP%數 :\n今日總下注額 :\n"
-                    "30日RTP%數 :\n30日總下注額 :"
-                )
-            elif msg == "使用說明":
-                reply = (
-                    "📘 使用說明：\n請依下列格式輸入：\n\n"
-                    "未開轉數 :\n前一轉開 :\n前二轉開 :\n"
-                    "今日RTP%數 :\n今日總下注額 :\n"
-                    "30日RTP%數 :\n30日總下注額 :\n\n"
-                    "⚠️ 建議：\n1️⃣ 請進入房間後使用分析，避免房間被搶。\n"
-                    "2️⃣ 數據越完整越準確。\n3️⃣ 分析有風險等級與建議。\n"
-                    "4️⃣ 數字請用整數格式。\n5️⃣ 範例請按『房間資訊表格』取得。"
-                )
-            elif member.get("status") != "approved":
+            print("DEBUG status:", member.get("status"))
+            if member.get("status") != "approved":
                 reply = "⛔️ 您尚未開通，請先申請通過才能使用分析功能。"
-            elif "RTP" in msg or "轉" in msg:
-                if member.get("usage_quota", 0) <= 0:
-                    reply = "⛔️ 今日分析次數已用完。如需加購請聯絡阿東。"
-                else:
-                    prev = get_previous_reply(user_id, msg_hash)
-                    if prev:
-                        reply = f"這份資料已分析過：\n\n{prev}"
-                    else:
-                        reply = fake_human_like_reply(msg, user_id)
-                        save_analysis_log(user_id, msg_hash, reply)
-                        supabase.table("members").update({
-                            "usage_quota": member["usage_quota"] - 1
-                        }).eq("line_user_id", user_id).execute()
             else:
-                reply = "請輸入房間資訊或使用下方選單。"
+                if msg == "我要開通":
+                    reply = "✅ 您已開通完成，歡迎使用。"
+                elif msg == "房間資訊表格":
+                    reply = (
+                        "未開轉數 :\n前一轉開 :\n前二轉開 :\n"
+                        "今日RTP%數 :\n今日總下注額 :\n"
+                        "30日RTP%數 :\n30日總下注額 :"
+                    )
+                elif msg == "使用說明":
+                    reply = (
+                        "📘 使用說明：\n請依下列格式輸入：\n\n"
+                        "未開轉數 :\n前一轉開 :\n前二轉開 :\n"
+                        "今日RTP%數 :\n今日總下注額 :\n"
+                        "30日RTP%數 :\n30日總下注額 :\n\n"
+                        "⚠️ 建議：\n1️⃣ 請進入房間後使用分析，避免房間被搶。\n"
+                        "2️⃣ 數據越完整越準確。\n3️⃣ 分析有風險等級與建議。\n"
+                        "4️⃣ 數字請用整數格式。\n5️⃣ 範例請按『房間資訊表格』取得。"
+                    )
+                elif "RTP" in msg or "轉" in msg:
+                    if member["usage_quota"] <= 0:
+                        reply = "⛔️ 今日分析次數已用完。如需加購請聯絡阿東。"
+                    else:
+                        prev = get_previous_reply(user_id, msg_hash)
+                        if prev:
+                            reply = f"這份資料已分析過：\n\n{prev}"
+                        else:
+                            reply = fake_human_like_reply(msg, user_id)
+                            save_analysis_log(user_id, msg_hash, reply)
+                            supabase.table("members").update({
+                                "usage_quota": member["usage_quota"] - 1
+                            }).eq("line_user_id", user_id).execute()
+                else:
+                    reply = "請輸入房間資訊或使用下方選單。"
 
         line_bot_api.reply_message(ReplyMessageRequest(
             reply_token=event.reply_token,
@@ -251,6 +250,7 @@ def handle_message(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
+
 
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
