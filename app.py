@@ -166,3 +166,7 @@ def fake_human_like_reply(msg, line_user_id):
 
 # 其餘 webhook 與訊息處理邏輯略
 # 已整合 reset_quota_if_needed 功能於會員查詢後每日更新使用次數
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
