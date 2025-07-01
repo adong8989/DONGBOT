@@ -196,6 +196,7 @@ def handle_message(event):
         line_bot_api = MessagingApi(api_client)
         member = get_member(user_id)
         print("DEBUG member:", member)  # 重要除錯輸出
+
         if not member:
             if msg == "我要開通":
                 add_member(user_id)
@@ -204,8 +205,10 @@ def handle_message(event):
                 reply = "您尚未開通，請先傳送「我要開通」。"
         else:
             member = reset_quota_if_needed(member)
-            print("DEBUG status:", member.get("status"))
-            if member.get("status") != "approved":
+            status = member.get("status")
+            print("DEBUG status:", status)
+
+            if not status or status.strip().lower() != "approved":
                 reply = "⛔️ 您尚未開通，請先申請通過才能使用分析功能。"
             else:
                 if msg == "我要開通":
@@ -227,7 +230,7 @@ def handle_message(event):
                         "4️⃣ 數字請用整數格式。\n5️⃣ 範例請按『房間資訊表格』取得。"
                     )
                 elif "RTP" in msg or "轉" in msg:
-                    if member["usage_quota"] <= 0:
+                    if member.get("usage_quota", 0) <= 0:
                         reply = "⛔️ 今日分析次數已用完。如需加購請聯絡阿東。"
                     else:
                         prev = get_previous_reply(user_id, msg_hash)
@@ -235,17 +238,8 @@ def handle_message(event):
                             reply = f"這份資料已分析過：\n\n{prev}"
                         else:
                             reply = fake_human_like_reply(msg, user_id)
-                            save_analysis_log(user_id, msg_hash, reply)
-                            supabase.table("members").update({
-                                "usage_quota": member["usage_quota"] - 1
-                            }).eq("line_user_id", user_id).execute()
-                else:
-                    reply = "請輸入房間資訊或使用下方選單。"
+                            save_analysis_log(user_id, msg_
 
-        line_bot_api.reply_message(ReplyMessageRequest(
-            reply_token=event.reply_token,
-            messages=[TextMessage(text=reply, quick_reply=build_quick_reply())]
-        ))
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
