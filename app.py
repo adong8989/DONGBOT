@@ -1,4 +1,3 @@
-你說：
 # app.py
 from flask import Flask, request, abort
 import os
