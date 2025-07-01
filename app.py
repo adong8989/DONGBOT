@@ -2,7 +2,7 @@
 from flask import Flask, request, abort
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 from supabase import create_client
 from linebot.v3.webhook import WebhookHandler, MessageEvent
@@ -11,7 +11,7 @@ from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest, QuickR
 import hashlib
 import random
 
-# === 初始化 ===
+# === 初始化環境變數 ===
 load_dotenv()
 
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
@@ -19,7 +19,7 @@ LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-if not SUPABASE_URL or not SUPABASE_KEY:
+if not (SUPABASE_URL and SUPABASE_KEY):
     raise ValueError("Supabase URL 或 KEY 尚未正確設定。請確認 .env 檔案或系統環境變數。")
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
@@ -30,62 +30,99 @@ app = Flask(__name__)
 ADMIN_USER_IDS = ["U34ea24babae0f2a6cbc09e02be4083d8"]  # 你的 LINE 管理員 user ID
 
 # === 工具函式 ===
+
 def get_member(user_id):
-    res = supabase.table("members").select("status, usage_quota, last_reset_at, member_level").eq("line_user_id", user_id).maybe_single().execute()
-    return res.data if res and res.data else None
+    try:
+        res = supabase.table("members") \
+            .select("status, usage_quota, last_reset_at, member_level, line_user_id") \
+            .eq("line_user_id", user_id) \
+            .maybe_single() \
+            .execute()
+        if res.status_code == 204 or not res.data:
+            return None
+        return res.data
+    except Exception as e:
+        print(f"Supabase 查詢會員錯誤: {e}")
+        return None
 
 def add_member(user_id):
-    supabase.table("members").insert({
-        "line_user_id": user_id,
-        "status": "pending",
-        "code": "SET2024",
-        "member_level": "normal",
-        "usage_quota": 50
-    }).execute()
+    try:
+        now_iso = datetime.utcnow().isoformat()
+        res = supabase.table("members").insert({
+            "line_user_id": user_id,
+            "status": "pending",
+            "code": "SET2024",
+            "member_level": "normal",
+            "usage_quota": 50,
+            "last_reset_at": now_iso
+        }).execute()
+        return res.data
+    except Exception as e:
+        print(f"Supabase 新增會員錯誤: {e}")
+        return None
 
 def reset_quota_if_needed(member):
-    if not member.get("last_reset_at"):
+    try:
+        if not member.get("last_reset_at") or not member.get("line_user_id"):
+            return member
+        last_reset = datetime.fromisoformat(member["last_reset_at"].replace("Z", "+00:00"))
+        now = datetime.utcnow()
+        if last_reset.date() < now.date():
+            res = supabase.table("members").update({
+                "usage_quota": 50,
+                "last_reset_at": now.isoformat()
+            }).eq("line_user_id", member["line_user_id"]).execute()
+            if res.status_code == 200:
+                member["usage_quota"] = 50
+                member["last_reset_at"] = now.isoformat()
         return member
-    last_reset = datetime.fromisoformat(member["last_reset_at"].replace("Z", "+00:00"))
-    now = datetime.utcnow()
-    if last_reset.date() < now.date():
-        supabase.table("members").update({
-            "usage_quota": 50,
-            "last_reset_at": now.isoformat()
-        }).eq("line_user_id", member["line_user_id"]).execute()
-        member["usage_quota"] = 50
-    return member
+    except Exception as e:
+        print(f"重置使用次數錯誤: {e}")
+        return member
 
 def save_analysis_log(user_id, msg_hash, reply):
-    supabase.table("analysis_logs").insert({
-        "line_user_id": user_id,
-        "msg_hash": msg_hash,
-        "reply": reply,
-        "created_at": datetime.utcnow().isoformat()
-    }).execute()
+    try:
+        supabase.table("analysis_logs").insert({
+            "line_user_id": user_id,
+            "msg_hash": msg_hash,
+            "reply": reply,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+    except Exception as e:
+        print(f"記錄分析日誌錯誤: {e}")
 
 def get_previous_reply(user_id, msg_hash):
-    res = supabase.table("analysis_logs").select("reply").eq("line_user_id", user_id).eq("msg_hash", msg_hash).maybe_single().execute()
-    return res.data["reply"] if res and res.data else None
+    try:
+        res = supabase.table("analysis_logs").select("reply") \
+            .eq("line_user_id", user_id).eq("msg_hash", msg_hash).maybe_single().execute()
+        if res.status_code == 204 or not res.data:
+            return None
+        return res.data.get("reply")
+    except Exception as e:
+        print(f"查詢先前回覆錯誤: {e}")
+        return None
 
 def update_member_preference(user_id, strategy):
-    supabase.table("member_preferences").upsert({
-        "line_user_id": user_id,
-        "preferred_strategy": strategy
-    }, on_conflict=["line_user_id"]).execute()
+    try:
+        supabase.table("member_preferences").upsert({
+            "line_user_id": user_id,
+            "preferred_strategy": strategy
+        }, on_conflict=["line_user_id"]).execute()
+    except Exception as e:
+        print(f"更新會員偏好錯誤: {e}")
 
 def fake_human_like_reply(msg, user_id):
-    signals_pool = [
-        ("眼睛", 7), ("刀子", 7), ("弓箭", 7), ("蛇", 7),
-        ("紅寶石", 7), ("藍寶石", 7), ("黃寶石", 7), ("綠寶石", 7), ("紫寶石", 7),
-        ("綠倍數球", 1), ("藍倍數球", 1), ("紫倍數球", 1), ("紅倍數球", 1),
-        ("聖甲蟲", 3)
-    ]
-    chosen = random.sample(signals_pool, k=2 if random.random() < 0.5 else 3)
-    signals = '\n'.join([f"{s[0]}：{random.randint(1, s[1])}顆" for s in chosen])
-
-    lines = {line.split(":")[0].strip(): line.split(":")[1].strip() for line in msg.split('\n') if ':' in line}
     try:
+        signals_pool = [
+            ("眼睛", 7), ("刀子", 7), ("弓箭", 7), ("蛇", 7),
+            ("紅寶石", 7), ("藍寶石", 7), ("黃寶石", 7), ("綠寶石", 7), ("紫寶石", 7),
+            ("綠倍數球", 1), ("藍倍數球", 1), ("紫倍數球", 1), ("紅倍數球", 1),
+            ("聖甲蟲", 3)
+        ]
+        chosen = random.sample(signals_pool, k=2 if random.random() < 0.5 else 3)
+        signals = '\n'.join([f"{s[0]}：{random.randint(1, s[1])}顆" for s in chosen])
+
+        lines = {line.split(":")[0].strip(): line.split(":")[1].strip() for line in msg.split('\n') if ':' in line}
         not_open = int(lines.get("未開轉數", 0))
         prev1 = int(lines.get("前一轉開", 0))
         prev2 = int(lines.get("前二轉開", 0))
@@ -93,38 +130,39 @@ def fake_human_like_reply(msg, user_id):
         bets_today = int(lines.get("今日總下注額", 0))
         rtp_30 = int(lines.get("30日RTP%數", 0))
         bets_30 = int(lines.get("30日總下注額", 0))
-    except:
+
+        score = 0
+        if rtp_today > 120: score += 3
+        elif rtp_today > 110: score += 2
+        elif rtp_today < 90: score -= 1
+        if bets_today >= 80000: score -= 1
+        elif bets_today < 30000: score += 1
+        if not_open > 250: score += 2
+        elif not_open < 100: score -= 1
+        if prev1 > 50: score += 1
+        if prev2 > 60: score += 1
+        if rtp_30 < 85: score += 1
+        elif rtp_30 > 100: score -= 1
+
+        if score >= 4:
+            risk, strategy, advice = "🚨 高風險", "高風險-建議平轉100轉後觀察", "這房可能已被爆分過，建議平轉100轉後觀察。"
+        elif score >= 2:
+            risk, strategy, advice = "⚠️ 中風險", "中風險-小注額觀察", "小注額試轉觀察平轉回分狀況。"
+        else:
+            risk, strategy, advice = "✅ 低風險", "低風險-可屯房買免遊", "先進場屯房50-100轉，回分可以就買免遊。"
+
+        update_member_preference(user_id, strategy)
+
+        return (
+            f"📊 初步分析結果如下：\n"
+            f"風險評估：{risk}\n"
+            f"建議策略：{advice}\n"
+            f"推薦訊號組合：\n{signals}\n"
+            f"✨ 若需進一步打法策略，可聯絡阿東超人：LINE ID adong8989"
+        )
+    except Exception as e:
+        print(f"分析失敗: {e}")
         return "❌ 分析失敗，請確認格式與數值是否正確。"
-
-    score = 0
-    if rtp_today > 120: score += 3
-    elif rtp_today > 110: score += 2
-    elif rtp_today < 90: score -= 1
-    if bets_today >= 80000: score -= 1
-    elif bets_today < 30000: score += 1
-    if not_open > 250: score += 2
-    elif not_open < 100: score -= 1
-    if prev1 > 50: score += 1
-    if prev2 > 60: score += 1
-    if rtp_30 < 85: score += 1
-    elif rtp_30 > 100: score -= 1
-
-    if score >= 4:
-        risk, strategy, advice = "🚨 高風險", "高風險-建議平轉100轉後觀察", "這房可能已被爆分過，建議平轉100轉後觀察。"
-    elif score >= 2:
-        risk, strategy, advice = "⚠️ 中風險", "中風險-小注額觀察", "小注額試轉觀察平轉回分狀況。"
-    else:
-        risk, strategy, advice = "✅ 低風險", "低風險-可屯房買免遊", "先進場屯房50-100轉，回分可以就買免遊。"
-
-    update_member_preference(user_id, strategy)
-
-    return (
-        f"📊 初步分析結果如下：\n"
-        f"風險評估：{risk}\n"
-        f"建議策略：{advice}\n"
-        f"推薦訊號組合：\n{signals}\n"
-        f"✨ 若需進一步打法策略，可聯絡阿東超人：LINE ID adong8989"
-    )
 
 def build_quick_reply():
     return QuickReply(items=[
@@ -134,6 +172,7 @@ def build_quick_reply():
         QuickReplyItem(action=MessageAction(label="📋 房間資訊表格", text="房間資訊表格"))
     ])
 
+# === Flask 路由 ===
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
@@ -207,5 +246,8 @@ def handle_message(event):
         ))
 
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=True)
+
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
