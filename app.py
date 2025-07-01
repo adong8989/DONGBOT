@@ -30,6 +30,7 @@ app = Flask(__name__)
 ADMIN_USER_IDS = ["U34ea24babae0f2a6cbc09e02be4083d8"]
 
 # === 工具函式 ===
+
 def get_member(user_id):
     try:
         res = supabase.table("members") \
@@ -37,11 +38,12 @@ def get_member(user_id):
             .eq("line_user_id", user_id) \
             .maybe_single() \
             .execute()
+        print("🔎 get_member:", res.status_code, res.data)
         if res.status_code == 204 or not res.data:
             return None
         return res.data
     except Exception as e:
-        print(f"Supabase 查詢會員錯誤: {e}")
+        print(f"❌ Supabase 查詢會員錯誤: {e}")
         return None
 
 def add_member(user_id):
@@ -56,9 +58,12 @@ def add_member(user_id):
             "last_reset_at": now_iso
         }, on_conflict=["line_user_id"]).execute()
 
-        print("🟢 新增/覆寫會員成功:", res)
+        print("🟢 新增/覆寫會員結果:", res.status_code)
+        print("🟡 回傳資料:", res.data)
+        print("🔴 回傳錯誤:", getattr(res, "error", "無 error 屬性"))
+
         if res.status_code >= 400:
-            print("❌ 插入失敗:", res)
+            return None
         return res.data
     except Exception as e:
         print(f"❌ Supabase 新增會員錯誤: {e}")
@@ -80,7 +85,7 @@ def reset_quota_if_needed(member):
                 member["last_reset_at"] = now.isoformat()
         return member
     except Exception as e:
-        print(f"重置使用次數錯誤: {e}")
+        print(f"⚠️ 重置使用次數錯誤: {e}")
         return member
 
 def save_analysis_log(user_id, msg_hash, reply):
@@ -92,7 +97,7 @@ def save_analysis_log(user_id, msg_hash, reply):
             "created_at": datetime.utcnow().isoformat()
         }).execute()
     except Exception as e:
-        print(f"記錄分析日誌錯誤: {e}")
+        print(f"⚠️ 記錄分析日誌錯誤: {e}")
 
 def get_previous_reply(user_id, msg_hash):
     try:
@@ -102,7 +107,7 @@ def get_previous_reply(user_id, msg_hash):
             return None
         return res.data.get("reply")
     except Exception as e:
-        print(f"查詢先前回覆錯誤: {e}")
+        print(f"⚠️ 查詢先前回覆錯誤: {e}")
         return None
 
 def update_member_preference(user_id, strategy):
@@ -112,7 +117,7 @@ def update_member_preference(user_id, strategy):
             "preferred_strategy": strategy
         }, on_conflict=["line_user_id"]).execute()
     except Exception as e:
-        print(f"更新會員偏好錯誤: {e}")
+        print(f"⚠️ 更新會員偏好錯誤: {e}")
 
 def fake_human_like_reply(msg, user_id):
     try:
@@ -164,7 +169,7 @@ def fake_human_like_reply(msg, user_id):
             f"✨ 若需進一步打法策略，可聯絡阿東超人：LINE ID adong8989"
         )
     except Exception as e:
-        print(f"分析失敗: {e}")
+        print(f"⚠️ 分析失敗: {e}")
         return "❌ 分析失敗，請確認格式與數值是否正確。"
 
 def build_quick_reply():
@@ -250,6 +255,10 @@ def handle_message(event):
             reply_token=event.reply_token,
             messages=[TextMessage(text=reply, quick_reply=build_quick_reply())]
         ))
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=True)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
