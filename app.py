@@ -193,17 +193,16 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         member = get_member(user_id)
-        if not member:
-            if msg == "我要開通":
-                add_member(user_id)
-                reply = f"申請成功！請加管理員 LINE:adong8989。你的 ID：{user_id}"
-            else:
-                reply = "您尚未開通，請先傳送「我要開通」。"
-        else:
-            member = reset_quota_if_needed({**member, "line_user_id": user_id})
-            if msg == "我要開通":
-                if member["status"] == "approved":
-                    reply = "✅ 您已開通完成，歡迎使用。"
+print("DEBUG member:", member)  # 這行是關鍵，確保拿到的 member 內容
+if not member:
+    reply = "您尚未開通，請先傳送「我要開通」。"
+else:
+    print("DEBUG status:", member.get("status"))  # 這行確定 status 是多少
+    if member.get("status") != "approved":
+        reply = "⛔️ 您尚未開通，請先申請通過才能使用分析功能。"
+    else:
+        reply = "✅ 您已開通完成，歡迎使用。"
+
                 else:
                     reply = f"你已經申請過囉，狀態是：{member['status']}"
             elif msg == "房間資訊表格":
