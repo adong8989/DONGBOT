@@ -98,7 +98,25 @@ def handle_message(event):
                 elif "RTP" in msg or "轉" in msg:
                     if member.get("usage_quota", 0) <= 0:
                         reply = "⛔️ 今日分析次數已用完。如需加購請聯絡阿東。"
-                    else
+                    else:
+                        prev = get_previous_reply(user_id, msg_hash)
+                        if prev:
+                            reply = f"這份資料已分析過：\n\n{prev}"
+                        else:
+                            reply = fake_human_like_reply(msg, user_id)
+                            save_analysis_log(user_id, msg_hash, reply)
+                            supabase.table("members").update({
+                                "usage_quota": member["usage_quota"] - 1
+                            }).eq("line_user_id", user_id).execute()
+                else:
+                    reply = "請輸入房間資訊或使用下方選單。"
 
+        line_bot_api.reply_message(ReplyMessageRequest(
+            reply_token=event.reply_token,
+            messages=[TextMessage(text=reply, quick_reply=build_quick_reply())]
+        ))
+
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
+
