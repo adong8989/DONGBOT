@@ -47,17 +47,21 @@ def get_member(user_id):
 def add_member(user_id):
     try:
         now_iso = datetime.utcnow().isoformat()
-        res = supabase.table("members").insert({
+        res = supabase.table("members").upsert({
             "line_user_id": user_id,
             "status": "pending",
             "code": "SET2024",
             "member_level": "normal",
             "usage_quota": 50,
             "last_reset_at": now_iso
-        }).execute()
+        }, on_conflict=["line_user_id"]).execute()
+
+        print("🟢 新增/覆寫會員成功:", res)
+        if res.status_code >= 400:
+            print("❌ 插入失敗:", res)
         return res.data
     except Exception as e:
-        print(f"Supabase 新增會員錯誤: {e}")
+        print(f"❌ Supabase 新增會員錯誤: {e}")
         return None
 
 def reset_quota_if_needed(member):
@@ -196,13 +200,15 @@ def handle_message(event):
 
         if not member:
             if msg == "我要開通":
-                add_member(user_id)
-                reply = f"申請成功！請加管理員 LINE:adong8989。你的 ID：{user_id}"
+                result = add_member(user_id)
+                if result:
+                    reply = f"申請成功！請加管理員 LINE:adong8989。你的 ID：{user_id}"
+                else:
+                    reply = "❌ 系統錯誤，請稍後再試。"
             else:
                 reply = "您尚未開通，請先傳送「我要開通」。"
         else:
             member = reset_quota_if_needed(member)
-            print("DEBUG status:", member.get("status"))
             if member.get("status") != "approved":
                 reply = "⛔️ 您尚未開通，請先申請通過才能使用分析功能。"
             else:
