@@ -193,7 +193,7 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         member = get_member(user_id)
-        print("DEBUG member:", member)  # 這行是關鍵，確保拿到的 member 內容
+        print(f"DEBUG get_member 返回資料：{member}")
 
         if not member:
             if msg == "我要開通":
@@ -202,7 +202,7 @@ def handle_message(event):
             else:
                 reply = "您尚未開通，請先傳送「我要開通」。"
         else:
-            print("DEBUG status:", member.get("status"))  # 這行確定 status 是多少
+            print(f"DEBUG member status: {member.get('status')}")
             member = reset_quota_if_needed(member)
             if msg == "我要開通":
                 if member.get("status") == "approved":
