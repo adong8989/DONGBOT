@@ -193,16 +193,20 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         member = get_member(user_id)
-print("DEBUG member:", member)  # 這行是關鍵，確保拿到的 member 內容
-if not member:
-    reply = "您尚未開通，請先傳送「我要開通」。"
-else:
-    print("DEBUG status:", member.get("status"))  # 這行確定 status 是多少
-    if member.get("status") != "approved":
-        reply = "⛔️ 您尚未開通，請先申請通過才能使用分析功能。"
-    else:
-        reply = "✅ 您已開通完成，歡迎使用。"
+        print("DEBUG member:", member)  # 這行是關鍵，確保拿到的 member 內容
 
+        if not member:
+            if msg == "我要開通":
+                add_member(user_id)
+                reply = f"申請成功！請加管理員 LINE:adong8989。你的 ID：{user_id}"
+            else:
+                reply = "您尚未開通，請先傳送「我要開通」。"
+        else:
+            print("DEBUG status:", member.get("status"))  # 這行確定 status 是多少
+            member = reset_quota_if_needed(member)
+            if msg == "我要開通":
+                if member.get("status") == "approved":
+                    reply = "✅ 您已開通完成，歡迎使用。"
                 else:
                     reply = f"你已經申請過囉，狀態是：{member['status']}"
             elif msg == "房間資訊表格":
@@ -221,10 +225,10 @@ else:
                     "2️⃣ 數據越完整越準確。\n3️⃣ 分析有風險等級與建議。\n"
                     "4️⃣ 數字請用整數格式。\n5️⃣ 範例請按『房間資訊表格』取得。"
                 )
-            elif member["status"] != "approved":
+            elif member.get("status") != "approved":
                 reply = "⛔️ 您尚未開通，請先申請通過才能使用分析功能。"
             elif "RTP" in msg or "轉" in msg:
-                if member["usage_quota"] <= 0:
+                if member.get("usage_quota", 0) <= 0:
                     reply = "⛔️ 今日分析次數已用完。如需加購請聯絡阿東。"
                 else:
                     prev = get_previous_reply(user_id, msg_hash)
