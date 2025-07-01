@@ -29,7 +29,8 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = Flask(__name__)
 
-ADMIN_USER_IDS = ["Uxxxxxxxxxxxxxxxxx"]  # 加上你的 LINE 管理員 user ID
+ADMIN_USER_IDS = ["U34ea24babae0f2a6cbc09e02be4083d8
+"]  # 加上你的 LINE 管理員 user ID
 
 # === 資料處理 ===
 def get_member(line_user_id):
