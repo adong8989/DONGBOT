@@ -104,7 +104,7 @@ def fake_human_like_reply(msg, line_user_id):
     if rtp_30 < 85: risk_score += 1
     elif rtp_30 > 100: risk_score -= 1
 
-    if score >= 4:
+        if risk_score >= 4:
         risk_level = random.choice(["🚨 高風險", "🔥 可能爆分過", "⚠️ 危險等級高"])
         strategies = [
             "高風險 - 建議平轉 100 轉後觀察",
@@ -116,7 +116,7 @@ def fake_human_like_reply(msg, line_user_id):
             "風險偏高，不建議立即大注投入，可先試探性小額下注。",
             "此類型 RTP 組合不太妙，建議觀察回分後再做決定。"
         ]
-    elif score >= 2:
+    elif risk_score >= 2:
         risk_level = random.choice(["⚠️ 中風險", "🟠 風險可控", "📉 中等偏穩"])
         strategies = [
             "中風險 - 小注額觀察",
@@ -147,7 +147,7 @@ def fake_human_like_reply(msg, line_user_id):
 
     return (
         f"📊 初步分析結果如下：\n"
-        f"風險評估：{risk}\n"
+        f"風險評估：{risk_level}\n"
         f"建議策略：{advice}\n"
         f"推薦訊號組合：\n{signal_text}\n"
         f"✨ 若需進一步打法策略，可聯絡阿東超人：LINE ID adong8989"
