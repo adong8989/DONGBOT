@@ -69,7 +69,7 @@ def fake_human_like_reply(msg, line_user_id):
         ("眼睛", 7), ("刀子", 7), ("弓箭", 7), ("蛇", 7),
         ("紅寶石", 7), ("藍寶石", 7), ("黃寶石", 7), ("綠寶石", 7), ("紫寶石", 7),
         ("綠倍數球", 1), ("藍倍數球", 1), ("紫倍數球", 1), ("紅倍數球", 1),
-        ("聖甲蟲", 3)
+        ("聖甲蟆", 3)
     ]
     chosen_signals = random.sample(signals_pool, k=2 if random.random() < 0.5 else 3)
     signal_text = '\n'.join([f"{s[0]}：{random.randint(1, s[1])}顆" for s in chosen_signals])
@@ -77,13 +77,13 @@ def fake_human_like_reply(msg, line_user_id):
 
     lines = {line.split(':')[0].strip(): line.split(':')[1].strip() for line in msg.split('\n') if ':' in line}
     try:
-        not_open = int(lines.get("未開轉數", 0))
-        prev1 = int(lines.get("前一轉開", 0))
-        prev2 = int(lines.get("前二轉開", 0))
-        rtp_today = int(lines.get("今日RTP%數", 0))
-        bets_today = int(lines.get("今日總下注額", 0))
-        rtp_30 = int(lines.get("30日RTP%數", 0))
-        bets_30 = int(lines.get("30日總下注額", 0))
+        not_open = int(lines.get("\u672a\u958b\u8f49\u6578", 0))
+        prev1 = int(lines.get("\u524d\u4e00\u8f49\u958b", 0))
+        prev2 = int(lines.get("\u524d\u4e8c\u8f49\u958b", 0))
+        rtp_today = int(lines.get("\u4eca\u65e5RTP%\u6578", 0))
+        bets_today = int(lines.get("\u4eca\u65e5\u7e3d\u4e0b\u6ce8\u984d", 0))
+        rtp_30 = int(lines.get("30\u65e5RTP%\u6578", 0))
+        bets_30 = int(lines.get("30\u65e5\u7e3d\u4e0b\u6ce8\u984d", 0))
     except:
         return "❌ 分析失敗，請確認格式與數值(不能有小數點)是否正確。"
 
@@ -104,7 +104,7 @@ def fake_human_like_reply(msg, line_user_id):
     if rtp_30 < 85: risk_score += 1
     elif rtp_30 > 100: risk_score -= 1
 
-        if risk_score >= 4:
+    if risk_score >= 4:
         risk_level = random.choice(["🚨 高風險", "🔥 可能爆分過", "⚠️ 危險等級高"])
         strategies = [
             "高風險 - 建議平轉 100 轉後觀察",
@@ -117,7 +117,7 @@ def fake_human_like_reply(msg, line_user_id):
             "此類型 RTP 組合不太妙，建議觀察回分後再做決定。"
         ]
     elif risk_score >= 2:
-        risk_level = random.choice(["⚠️ 中風險", "🟠 風險可控", "📉 中等偏穩"])
+        risk_level = random.choice(["⚠️ 中風險", "🟠 風險可控", "📉 中程偏穩"])
         strategies = [
             "中風險 - 小注額觀察",
             "中風險 - 觀察型打法",
@@ -126,17 +126,17 @@ def fake_human_like_reply(msg, line_user_id):
         advices = [
             "可以先小額下注觀察，回分還不錯就再進一步。",
             "此房間 RTP 有一定潛力，但建議保守試轉。",
-            "整體偏中性，觀察幾轉後再決定是否屯房或免遊。"
+            "整體偏中性，觀察幾轉後再決定是否展房或免遊。"
         ]
     else:
         risk_level = random.choice(["✅ 低風險", "🟢 穩定場", "💎 安全房"])
         strategies = [
-            "低風險 - 可屯房買免遊",
+            "低風險 - 可展房買免遊",
             "低風險 - 可直接嘗試免遊策略",
-            "低風險 - 推薦屯房後試免遊"
+            "低風險 - 推薦展房後試免遊"
         ]
         advices = [
-            "整體數據良好，建議進場屯房 50-100 轉觀察回分後買免遊。",
+            "整體數據良好，建議進場展房 50-100 轉觀察回分後買免遊。",
             "是個不錯的機會房間，建議穩紮穩打進場。",
             "回分條件佳，可考慮免遊開局。"
         ]
