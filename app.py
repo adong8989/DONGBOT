@@ -69,7 +69,7 @@ def fake_human_like_reply(msg, line_user_id):
         ("眼睛", 7), ("刀子", 7), ("弓箭", 7), ("蛇", 7),
         ("紅寶石", 7), ("藍寶石", 7), ("黃寶石", 7), ("綠寶石", 7), ("紫寶石", 7),
         ("綠倍數球", 1), ("藍倍數球", 1), ("紫倍數球", 1), ("紅倍數球", 1),
-        ("聖甲蟆", 3)
+        ("聖甲蟲", 3)
     ]
     chosen_signals = random.sample(signals_pool, k=2 if random.random() < 0.5 else 3)
     signal_text = '\n'.join([f"{s[0]}：{random.randint(1, s[1])}顆" for s in chosen_signals])
@@ -105,7 +105,7 @@ def fake_human_like_reply(msg, line_user_id):
     elif rtp_30 > 100: risk_score -= 1
 
     if risk_score >= 4:
-        risk_level = random.choice(["🚨 高風險", "🔥 可能爆分過", "⚠️ 危險等級高"])
+        risk_level = random.choice(["🚨 高風險", "🔥 可能被爆分過", "⚠️ 危險等級高"])
         strategies = [
             "高風險 - 建議平轉 100 轉後觀察",
             "高風險 - 小心進場，觀察平轉回分",
@@ -117,28 +117,28 @@ def fake_human_like_reply(msg, line_user_id):
             "此類型 RTP 組合不太妙，建議觀察回分後再做決定。"
         ]
     elif risk_score >= 2:
-        risk_level = random.choice(["⚠️ 中風險", "🟠 風險可控", "📉 中程偏穩"])
+        risk_level = random.choice(["⚠️ 中風險", "🟠 風險可控", "📉 中間等級的房間"])
         strategies = [
             "中風險 - 小注額觀察",
             "中風險 - 觀察型打法",
-            "中風險 - 可視情況試免遊"
+            "中風險 - 可視情況購買免遊"
         ]
         advices = [
-            "可以先小額下注觀察，回分還不錯就再進一步。",
-            "此房間 RTP 有一定潛力，但建議保守試轉。",
-            "整體偏中性，觀察幾轉後再決定是否展房或免遊。"
+            "可以先小注額觀察看看，回分還不錯就再升注看看。",
+            "此房間 RTP 有一定潛力，但建議保守小試幾轉。",
+            "整體偏中等，觀察幾轉後再決定是否換房或買免遊。"
         ]
     else:
         risk_level = random.choice(["✅ 低風險", "🟢 穩定場", "💎 安全房"])
         strategies = [
-            "低風險 - 可展房買免遊",
-            "低風險 - 可直接嘗試免遊策略",
-            "低風險 - 推薦展房後試免遊"
+            "低風險 - 可進房試買免遊",
+            "低風險 - 可直接嘗試免遊看回分",
+            "低風險 - 推薦進房後試著買看看免遊"
         ]
         advices = [
             "整體數據良好，建議進場展房 50-100 轉觀察回分後買免遊。",
-            "是個不錯的機會房間，建議穩紮穩打進場。",
-            "回分條件佳，可考慮免遊開局。"
+            "是個不錯的房間，建議穩紮穩打先屯房看看回分。",
+            "平轉回分如果還不錯，可考慮用免遊開局。"
         ]
 
     strategy = random.choice(strategies)
