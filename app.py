@@ -65,28 +65,37 @@ def update_member_preference(line_user_id, strategy):
     }, on_conflict=["line_user_id"]).execute()
 
 def fake_human_like_reply(msg, line_user_id):
+    # 移除倍數球
     signals_pool = [
         ("眼睛", 7), ("刀子", 7), ("弓箭", 7), ("蛇", 7),
         ("紅寶石", 7), ("藍寶石", 7), ("黃寶石", 7), ("綠寶石", 7), ("紫寶石", 7),
-        ("綠倍數球", 1), ("藍倍數球", 1), ("紫倍數球", 1), ("紅倍數球", 1),
         ("聖甲蟲", 3)
     ]
-    chosen_signals = random.sample(signals_pool, k=2 if random.random() < 0.5 else 3)
-    signal_text = '\n'.join([f"{s[0]}：{random.randint(1, s[1])}顆" for s in chosen_signals])
-    save_signal_stats(chosen_signals)
 
+    # 產生訊號組合，總數量 <= 12 顆
+    while True:
+        chosen = random.sample(signals_pool, k=random.choice([2, 3, 4]))
+        selected_with_qty = [(s[0], random.randint(1, s[1])) for s in chosen]
+        if sum(q for _, q in selected_with_qty) <= 12:
+            break
+
+    signal_text = '\n'.join([f"{s}：{q}顆" for s, q in selected_with_qty])
+    save_signal_stats(selected_with_qty)
+
+    # 解析訊息
     lines = {line.split(':')[0].strip(): line.split(':')[1].strip() for line in msg.split('\n') if ':' in line}
     try:
-        not_open = int(lines.get("\u672a\u958b\u8f49\u6578", 0))
-        prev1 = int(lines.get("\u524d\u4e00\u8f49\u958b", 0))
-        prev2 = int(lines.get("\u524d\u4e8c\u8f49\u958b", 0))
-        rtp_today = int(lines.get("\u4eca\u65e5RTP%\u6578", 0))
-        bets_today = int(lines.get("\u4eca\u65e5\u7e3d\u4e0b\u6ce8\u984d", 0))
-        rtp_30 = int(lines.get("30\u65e5RTP%\u6578", 0))
-        bets_30 = int(lines.get("30\u65e5\u7e3d\u4e0b\u6ce8\u984d", 0))
+        not_open = int(lines.get("未開轉數", 0))
+        prev1 = int(lines.get("前一轉開", 0))
+        prev2 = int(lines.get("前二轉開", 0))
+        rtp_today = int(lines.get("今日RTP%數", 0))
+        bets_today = int(lines.get("今日總下注額", 0))
+        rtp_30 = int(lines.get("30日RTP%數", 0))
+        bets_30 = int(lines.get("30日總下注額", 0))
     except:
         return "❌ 分析失敗，請確認格式與數值(不能有小數點)是否正確。"
 
+    # 評估風險
     risk_score = 0
     if rtp_today > 120: risk_score += 3
     elif rtp_today > 110: risk_score += 2
