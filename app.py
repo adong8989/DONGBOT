@@ -10,6 +10,7 @@ from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest, QuickR
 import hashlib
 import json
 import random
+from datetime import datetime, date
 
 # === 初始化 ===
 load_dotenv()
@@ -28,17 +29,17 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = Flask(__name__)
 
+# === 資料庫函數 ===
 def get_member(line_user_id):
-    res = supabase.table("members").select("status").eq("line_user_id", line_user_id).maybe_single().execute()
+    res = supabase.table("members").select("status", "member_level").eq("line_user_id", line_user_id).maybe_single().execute()
     return res.data if res and res.data else None
 
 def add_member(line_user_id, code="SET2024"):
-    res = supabase.table("members").insert({
+    return supabase.table("members").insert({
         "line_user_id": line_user_id,
         "status": "pending",
         "code": code
     }).execute()
-    return res.data
 
 def save_analysis_log(line_user_id, msg_hash, reply):
     supabase.table("analysis_logs").insert({
@@ -64,36 +65,40 @@ def update_member_preference(line_user_id, strategy):
         "preferred_strategy": strategy
     }, on_conflict=["line_user_id"]).execute()
 
-def generate_signal_combination(existing_names=set()):
+def get_usage_today(line_user_id):
+    today_str = date.today().isoformat()
+    res = supabase.table("usage_logs").select("used_count").eq("line_user_id", line_user_id).eq("used_at_date", today_str).maybe_single().execute()
+    return res.data["used_count"] if res.data else 0
+
+def increment_usage(line_user_id):
+    today_str = date.today().isoformat()
+    used = get_usage_today(line_user_id)
+    if used:
+        supabase.table("usage_logs").update({"used_count": used + 1}).eq("line_user_id", line_user_id).eq("used_at_date", today_str).execute()
+    else:
+        supabase.table("usage_logs").insert({"line_user_id": line_user_id, "used_at_date": today_str, "used_count": 1}).execute()
+
+# === 假分析訊息邏輯 ===
+def fake_human_like_reply(msg, line_user_id):
     signals_pool = [
         ("眼睛", 7), ("刀子", 7), ("弓箭", 7), ("蛇", 7),
         ("紅寶石", 7), ("藍寶石", 7), ("黃寶石", 7), ("綠寶石", 7), ("紫寶石", 7),
         ("聖甲蟲", 3)
     ]
-    signals_pool = [s for s in signals_pool if s[0] not in existing_names]
-    while True:
-        chosen = random.sample(signals_pool, k=random.choice([2, 3, 4]))
-        selected_with_qty = [(s[0], random.randint(1, s[1])) for s in chosen]
-        if sum(q for _, q in selected_with_qty) <= 12:
-            return selected_with_qty
+    groups = []
+    for _ in range(2):
+        while True:
+            chosen = random.sample(signals_pool, k=random.choice([2, 3]))
+            selected = [(s[0], random.randint(1, s[1])) for s in chosen]
+            if sum(q for _, q in selected) <= 12:
+                groups.append(selected)
+                break
 
-def fake_human_like_reply(msg, line_user_id):
-    combo1 = generate_signal_combination()
-    names_used = set(s[0] for s in combo1)
-    combo2 = generate_signal_combination(existing_names=names_used)
+    signal_text = "\n\n".join("\n".join([f"{s}：{q}顆" for s, q in group]) for group in groups)
+    for group in groups:
+        save_signal_stats(group)
 
-    save_signal_stats(combo1)
-    save_signal_stats(combo2)
-
-    signal_text = (
-        "🔹 組合一：\n" +
-        '\n'.join([f"{s}：{q}顆" for s, q in combo1]) + "\n\n" +
-        "🔸 組合二：\n" +
-        '\n'.join([f"{s}：{q}顆" for s, q in combo2])
-    )
-
-    # 解析訊息
-    lines = {line.split(':')[0].strip(): line.split(':')[1].strip() for line in msg.split('\n') if ':' in line}
+    lines = {line.split(":")[0].strip(): line.split(":")[1].strip() for line in msg.split('\n') if ':' in line}
     try:
         not_open = int(lines.get("未開轉數", 0))
         prev1 = int(lines.get("前一轉開", 0))
@@ -105,73 +110,36 @@ def fake_human_like_reply(msg, line_user_id):
     except:
         return "❌ 分析失敗，請確認格式與數值(不能有小數點)是否正確。"
 
-    # 評估風險
     risk_score = 0
     if rtp_today > 120: risk_score += 3
     elif rtp_today > 110: risk_score += 2
     elif rtp_today < 90: risk_score -= 1
-
     if bets_today >= 80000: risk_score -= 1
     elif bets_today < 30000: risk_score += 1
-
     if not_open > 250: risk_score += 2
     elif not_open < 100: risk_score -= 1
-
     if prev1 > 50: risk_score += 1
     if prev2 > 60: risk_score += 1
-
     if rtp_30 < 85: risk_score += 1
     elif rtp_30 > 100: risk_score -= 1
 
     if risk_score >= 4:
-        risk_level = random.choice(["🚨 高風險", "🔥 可能被爆分過", "⚠️ 危險等級高"])
-        strategies = [
-            "高風險 - 建議平轉 100 轉後觀察",
-            "高風險 - 小心進場，觀察平轉回分",
-            "高風險 - 建議試水溫轉轉看"
-        ]
-        advices = [
-            "這房可能已經被吃分或爆分過，建議你先用 100 轉觀察回分情況。",
-            "風險偏高，不建議立即大注投入，可先試探性小額下注。",
-            "此類型 RTP 組合不太妙，建議觀察回分後再做決定。"
-        ]
+        level = random.choice(["🚨 高風險", "🔥 可能被爆分過", "⚠️ 危險等級高"])
+        strategy = random.choice(["高風險 - 建議平轉 100 轉後觀察", "高風險 - 小心進場，觀察平轉回分"])
+        advice = random.choice(["建議先用 100 轉觀察回分情況。", "此類型 RTP 組合不太妙，建議保守應對。"])
     elif risk_score >= 2:
-        risk_level = random.choice(["⚠️ 中風險", "🟠 風險可控", "📉 中間等級的房間"])
-        strategies = [
-            "中風險 - 小注額觀察",
-            "中風險 - 觀察型打法",
-            "中風險 - 可視情況購買免遊"
-        ]
-        advices = [
-            "可以先小注額觀察看看，回分還不錯就再升注看看。",
-            "此房間 RTP 有一定潛力，但建議保守小試幾轉。",
-            "整體偏中等，觀察幾轉後再決定是否換房或買免遊。"
-        ]
+        level = random.choice(["⚠️ 中風險", "🟠 風險可控"])
+        strategy = random.choice(["中風險 - 小注額觀察", "中風險 - 觀察型打法"])
+        advice = random.choice(["可先小額下注觀察。", "RTP 有潛力，建議保守試轉。"])
     else:
-        risk_level = random.choice(["✅ 低風險", "🟢 穩定場", "💎 安全房"])
-        strategies = [
-            "低風險 - 可進房試買免遊",
-            "低風險 - 可直接嘗試免遊看回分",
-            "低風險 - 推薦進房後試著買看看免遊"
-        ]
-        advices = [
-            "整體數據良好，建議進場展房 50-100 轉觀察回分後買免遊。",
-            "是個不錯的房間，建議穩紮穩打先屯房看看回分。",
-            "平轉回分如果還不錯，可考慮用免遊開局。"
-        ]
+        level = random.choice(["✅ 低風險", "🟢 穩定場"])
+        strategy = random.choice(["低風險 - 可進房試買免遊", "低風險 - 可直接嘗試免遊"])
+        advice = random.choice(["建議進場屯房後買免遊。", "是個不錯的房間，建議穩紮穩打進場。"])
 
-    strategy = random.choice(strategies)
-    advice = random.choice(advices)
     update_member_preference(line_user_id, strategy)
+    return f"📊 初步分析結果如下：\n風險評估：{level}\n建議策略：{advice}\n推薦訊號組合：\n{signal_text}\n\n✨ 若需進一步打法策略，可聯絡阿東超人：LINE ID adong8989"
 
-    return (
-        f"📊 初步分析結果如下：\n"
-        f"風險評估：{risk_level}\n"
-        f"建議策略：{advice}\n"
-        f"推薦訊號組合：\n{signal_text}\n"
-        f"✨ 若需進一步打法策略，可聯絡阿東超人：LINE ID adong8989"
-    )
-
+# === LINE Bot ===
 def build_quick_reply():
     return QuickReply(items=[
         QuickReplyItem(action=MessageAction(label="🔓 我要開通", text="我要開通")),
@@ -184,10 +152,9 @@ def build_quick_reply():
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
-
     try:
         handler.handle(body, signature)
-    except Exception as e:
+    except Exception:
         logging.exception("Webhook handler error")
         abort(400)
     return "OK"
@@ -196,7 +163,6 @@ def callback():
 def handle_message(event):
     user_id = event.source.user_id if event.source else "unknown"
     msg_type = event.message.type
-
     if msg_type != "text":
         return
 
@@ -205,57 +171,45 @@ def handle_message(event):
 
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
-        member_data = get_member(user_id)
+        member = get_member(user_id)
 
         if msg == "我要開通":
-            if member_data:
-                if member_data["status"] == "approved":
+            if member:
+                if member["status"] == "approved":
                     reply = "✅ 您已開通完成，歡迎使用選房分析功能。"
                 else:
-                    reply = f"你已經申請過囉趕緊找管理員審核 LINE ID :adong8989，狀態是：{member_data['status']}"
+                    reply = f"你已經申請過囉，狀態為：{member['status']}。請聯絡管理員 LINE ID: adong8989"
             else:
                 add_member(user_id)
-                reply = f"申請成功！請加管理員 LINE:adong8989 給你的 USER ID 申請審核。你的 user_id 是：{user_id}"
+                reply = f"申請成功！請加管理員 LINE:adong8989，提供 user_id：{user_id} 申請審核。"
 
         elif msg == "房間資訊表格":
-            reply = (
-                "未開轉數 :\n"
-                "前一轉開 :\n"
-                "前二轉開 :\n"
-                "今日RTP%數 :\n"
-                "今日總下注額 :\n"
-                "30日RTP%數 :\n"
-                "30日總下注額 :"
-            )
+            reply = "未開轉數 :\n前一轉開 :\n前二轉開 :\n今日RTP%數 :\n今日總下注額 :\n30日RTP%數 :\n30日總下注額 :"
 
-        elif not member_data or member_data["status"] != "approved":
-            reply = "您尚未開通，請先傳送「我要開通」來申請審核。"
+        elif not member or member["status"] != "approved":
+            reply = "❌ 您尚未開通，請先傳送「我要開通」來申請審核。"
 
         elif "RTP" in msg or "轉" in msg:
-            previous = get_previous_reply(user_id, msg_hash)
-            if previous:
-                reply = f"這份資料已經分析過囉，請勿重複提交相同內容唷：\n\n{previous}"
+            level = member.get("member_level", "normal")
+            limit = 15 if level == "normal" else 50
+            used = get_usage_today(user_id)
+            if used >= limit:
+                reply = f"⚠️ 您今天的使用次數已達上限 ({limit} 次)，請明天再試，或升級為 VIP 使用更多次數。"
             else:
-                reply = fake_human_like_reply(msg, user_id)
-                save_analysis_log(user_id, msg_hash, reply)
+                previous = get_previous_reply(user_id, msg_hash)
+                if previous:
+                    reply = f"這份資料已經分析過囉：\n\n{previous}"
+                else:
+                    reply = fake_human_like_reply(msg, user_id)
+                    save_analysis_log(user_id, msg_hash, reply)
+                    increment_usage(user_id)
 
         elif msg == "使用說明":
             reply = (
-                "📘 使用說明：\n"
-                "請依下列格式輸入 RTP 資訊進行分析：\n\n"
-                "未開轉數 :\n"
-                "前一轉開 :\n"
-                "前二轉開 :\n"
-                "今日RTP%數 :\n"
-                "今日總下注額 :\n"
-                "30日RTP%數 :\n"
-                "30日總下注額 :\n\n"
-                "⚠️ 建議：\n"
-                "1️⃣ 先進入房間再來使用分析，可避免房間被搶走哦。\n"
-                "2️⃣ 提供的數據越完整，分析越準確。\n"
-                "3️⃣ 分析結果會依據房間風險級別：高風險 / 中風險 / 低風險\n"
-                "4️⃣ 房間所有的資訊只需提供小數點前面的數字不能加小數點與 % 符號。\n"
-                "5️⃣ 房間資訊範例圖請按 (房間資訊表格) 按鈕索取。"
+                "📘 使用說明：\n請依下列格式輸入 RTP 資訊：\n\n"
+                "未開轉數 :\n前一轉開 :\n前二轉開 :\n今日RTP%數 :\n今日總下注額 :\n30日RTP%數 :\n30日總下注額 :\n\n"
+                "⚠️ 注意：數值請填整數，勿使用小數點與 % 符號。\n"
+                "建議分析前先進入房間避免被搶走。"
             )
 
         else:
