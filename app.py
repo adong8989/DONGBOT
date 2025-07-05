@@ -239,7 +239,13 @@ def handle_message(event):
 
         elif "RTP" in msg or "轉" in msg:
             level = member_data.get("member_level", "normal")
-            limit = 50 if level == "vip" else 15
+            if level == "vip":
+                limit = 50
+        elif level == "trial":
+            limit = 1
+        else:
+            limit = 15
+
             used = get_usage_today(user_id)
             if used >= limit:
                 reply = f"⚠️ 今日已達使用上限（{limit}次），請明日再試或升級 VIP。"
