@@ -64,23 +64,33 @@ def update_member_preference(line_user_id, strategy):
         "preferred_strategy": strategy
     }, on_conflict=["line_user_id"]).execute()
 
-def fake_human_like_reply(msg, line_user_id):
-    # 移除倍數球
+def generate_signal_combination(existing_names=set()):
     signals_pool = [
         ("眼睛", 7), ("刀子", 7), ("弓箭", 7), ("蛇", 7),
         ("紅寶石", 7), ("藍寶石", 7), ("黃寶石", 7), ("綠寶石", 7), ("紫寶石", 7),
         ("聖甲蟲", 3)
     ]
-
-    # 產生訊號組合，總數量 <= 12 顆
+    signals_pool = [s for s in signals_pool if s[0] not in existing_names]
     while True:
         chosen = random.sample(signals_pool, k=random.choice([2, 3, 4]))
         selected_with_qty = [(s[0], random.randint(1, s[1])) for s in chosen]
         if sum(q for _, q in selected_with_qty) <= 12:
-            break
+            return selected_with_qty
 
-    signal_text = '\n'.join([f"{s}：{q}顆" for s, q in selected_with_qty])
-    save_signal_stats(selected_with_qty)
+def fake_human_like_reply(msg, line_user_id):
+    combo1 = generate_signal_combination()
+    names_used = set(s[0] for s in combo1)
+    combo2 = generate_signal_combination(existing_names=names_used)
+
+    save_signal_stats(combo1)
+    save_signal_stats(combo2)
+
+    signal_text = (
+        "🔹 組合一：\n" +
+        '\n'.join([f"{s}：{q}顆" for s, q in combo1]) + "\n\n" +
+        "🔸 組合二：\n" +
+        '\n'.join([f"{s}：{q}顆" for s, q in combo2])
+    )
 
     # 解析訊息
     lines = {line.split(':')[0].strip(): line.split(':')[1].strip() for line in msg.split('\n') if ':' in line}
