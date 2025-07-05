@@ -202,11 +202,16 @@ def callback():
 def handle_message(event):
     user_id = event.source.user_id if event.source else "unknown"
     msg = event.message.text.strip()
-    msg_hash = hashlib.sha256(msg.encode()).hexdigest()
+    msg_hash = hashlib.sha256(msg.encode('utf-8')).hexdigest()  # 明確 utf-8
+
+    print(f"[DEBUG] user_id: {user_id}")
+    print(f"[DEBUG] message:\n{msg}")
+    print(f"[DEBUG] msg_hash: {msg_hash}")
 
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         member_data = get_member(user_id)
+        print(f"[DEBUG] member_data: {member_data}")
 
         if msg == "我要開通":
             if member_data:
@@ -273,6 +278,41 @@ def handle_message(event):
             reply_token=event.reply_token,
             messages=[TextMessage(text=reply, quick_reply=build_quick_reply())]
         ))
+
+def get_previous_reply(line_user_id, msg_hash):
+    try:
+        res = supabase.table("analysis_logs").select("reply").eq("line_user_id", line_user_id).eq("msg_hash", msg_hash).maybe_single().execute()
+        return res.data["reply"] if res and res.data else None
+    except Exception as e:
+        logging.error(f"[get_previous_reply error] {e}")
+        return None
+
+def save_analysis_log(line_user_id, msg_hash, reply):
+    try:
+        supabase.table("analysis_logs").insert({
+            "line_user_id": line_user_id,
+            "msg_hash": msg_hash,
+            "reply": reply
+        }).execute()
+    except Exception as e:
+        logging.error(f"[save_analysis_log error] {e}")
+
+def increment_usage(line_user_id):
+    today = datetime.utcnow().strftime('%Y-%m-%d')
+    try:
+        used = get_usage_today(line_user_id)
+        if used == 0:
+            supabase.table("usage_logs").insert({
+                "line_user_id": line_user_id,
+                "used_at": today,
+                "used_count": 1
+            }).execute()
+        else:
+            supabase.table("usage_logs").update({
+                "used_count": used + 1
+            }).eq("line_user_id", line_user_id).eq("used_at", today).execute()
+    except Exception as e:
+        logging.error(f"[increment_usage error] {e}")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
