@@ -8,7 +8,6 @@ from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
 from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest, QuickReply, QuickReplyItem, MessageAction, URIAction
 from datetime import datetime
 import hashlib
-import json
 import random
 
 # === 初始化 ===
@@ -40,8 +39,12 @@ def add_member(line_user_id, code="SET2024"):
 
 def get_usage_today(line_user_id):
     today = datetime.utcnow().strftime('%Y-%m-%d')
-    res = supabase.table("usage_logs").select("used_count").eq("line_user_id", line_user_id).eq("used_at", today).maybe_single().execute()
-    return res.data["used_count"] if res.data else 0
+    try:
+        res = supabase.table("usage_logs").select("used_count").eq("line_user_id", line_user_id).eq("used_at", today).maybe_single().execute()
+        return res.data["used_count"] if res.data and "used_count" in res.data else 0
+    except Exception as e:
+        logging.error(f"[get_usage_today 錯誤] {e}")
+        return 0
 
 def increment_usage(line_user_id):
     today = datetime.utcnow().strftime('%Y-%m-%d')
@@ -81,7 +84,7 @@ def update_member_preference(line_user_id, strategy):
         "preferred_strategy": strategy
     }, on_conflict=["line_user_id"]).execute()
 
-# === AI 假人分析函數 ===
+# === 假人分析函數 ===
 def fake_human_like_reply(msg, line_user_id):
     signals_pool = [
         ("眼睛", 7), ("刀子", 7), ("弓箭", 7), ("蛇", 7),
@@ -90,7 +93,7 @@ def fake_human_like_reply(msg, line_user_id):
     ]
 
     all_combos = []
-    for _ in range(2):  # 推薦兩組
+    for _ in range(2):
         while True:
             chosen = random.sample(signals_pool, k=random.choice([2, 3]))
             combo = [(s[0], random.randint(1, s[1])) for s in chosen]
@@ -230,7 +233,6 @@ def handle_message(event):
             reply = "您尚未開通，請先傳送「我要開通」來申請審核。"
 
         elif "RTP" in msg or "轉" in msg:
-            # 使用次數限制
             level = member_data.get("member_level", "normal")
             limit = 50 if level == "vip" else 15
             used = get_usage_today(user_id)
@@ -244,6 +246,8 @@ def handle_message(event):
                     reply = fake_human_like_reply(msg, user_id)
                     save_analysis_log(user_id, msg_hash, reply)
                     increment_usage(user_id)
+                    used += 1
+                    reply += f"\n\n✅ 分析完成（今日剩餘 {limit - used} / {limit} 次）"
 
         elif msg == "使用說明":
             reply = (
