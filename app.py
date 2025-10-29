@@ -307,7 +307,7 @@ def handle_message(event):
                     save_analysis_log(user_id, msg_hash, reply)
                     increment_usage(user_id)
                     used += 1
-                    reply += f"\n\n✅ 分析完成（今日剩餘 {limit - used} / {limit} 次
+                    reply += f"\n\n✅ 分析完成（今日剩餘 {limit - used} / {limit} 次)"
 
         elif msg == "使用說明":
             reply = (
