@@ -223,7 +223,6 @@ def handle_message(event):
 
         elif msg == "房間資訊表格":
             reply = (
-                "請依以下格式輸入三項資料進行分析：\n\n"
                 "未開轉數 :\n"
                 "今日RTP%數 :\n"
                 "今日總下注額 :"
