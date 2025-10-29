@@ -234,7 +234,6 @@ def fake_human_like_reply(msg, line_user_id):
 
     if sums[0] > sums[1]:
         priority = "組合 A 優先（顆數較多）"
-
     elif sums[1] > sums[0]:
         priority = "組合 B 優先（顆數較多）"
     else:
@@ -361,6 +360,7 @@ def handle_message(event):
 
         elif msg == "房間資訊表格":
             reply = (
+                "請依以下格式輸入三項資料進行分析：\n\n"
                 "未開轉數 :\n"
                 "今日RTP%數 :\n"
                 "今日總下注額 :"
@@ -443,7 +443,7 @@ def handle_message(event):
             logger.exception("[reply_message error]")
 
 # === run server ===
-if name == "__main__":
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     # In production use a WSGI server (gunicorn). debug=True only for local dev.
     app.run(host="0.0.0.0", port=port, debug=True)
