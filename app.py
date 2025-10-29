@@ -111,7 +111,7 @@ def increment_usage(line_user_id):
     try:
         used = get_usage_today(line_user_id)
         if used == 0:
-    supabase.table("usage_logs").insert({
+            supabase.table("usage_logs").insert({
                 "line_user_id": line_user_id,
                 "used_at": today,
                 "used_count": 1
