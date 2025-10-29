@@ -119,9 +119,7 @@ def fake_human_like_reply(msg, line_user_id):
     # 解析輸入文字
     lines = {}
     for line in msg.split('\n'):
-
-阿辰, [2025/10/29 下午 06:49]
-if ':' in line:
+        if ':' in line:
             k, v = line.split(':', 1)
             lines[k.strip()] = v.strip()
 
@@ -252,8 +250,7 @@ def handle_message(event):
                     used += 1
                     reply += f"\n\n✅ 分析完成（今日剩餘 {limit - used} / {limit} 次）"
 
-阿辰, [2025/10/29 下午 06:49]
-elif msg == "使用說明":
+        elif msg == "使用說明":
             reply = (
                 "📘 使用說明：\n"
                 "請依下列格式輸入 RTP 資訊：\n\n"
@@ -274,6 +271,6 @@ elif msg == "使用說明":
             messages=[TextMessage(text=reply, quick_reply=build_quick_reply())]
         ))
 
-if name == "__main__":
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
