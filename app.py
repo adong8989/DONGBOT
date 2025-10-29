@@ -94,6 +94,26 @@ def save_analysis_log(line_user_id, msg_hash, reply):
     except Exception as e:
         logger.exception("[save_analysis_log error]")
 
+def save_signal_stats(signals):
+    # signals: list of tuples [("眼睛", 3), ...] or list of such lists
+    try:
+        if not signals:
+            return
+        flat = []
+        if all(isinstance(x, tuple) and len(x) == 2 for x in signals):
+            flat = signals
+        else:
+            for group in signals:
+                for s, qty in group:
+                    flat.append((s, qty))
+        for s, qty in flat:
+            supabase.table("signal_stats").insert({
+                "signal_name": s,
+                "quantity": qty
+            }).execute()
+    except Exception as e:
+        logger.exception("[save_signal_stats error]")
+
 def update_member_preference(line_user_id, strategy):
     try:
         supabase.table("member_preferences").upsert({
@@ -103,20 +123,53 @@ def update_member_preference(line_user_id, strategy):
     except Exception as e:
         logger.exception("[update_member_preference error]")
 
-# === 假人分析函數（僅使用三項） ===
+# === 假人分析函數（含推薦訊號） ===
 def fake_human_like_reply(msg, line_user_id):
     """
     只分析以下三項：
       1. 未開轉數
       2. 今日RTP%數
       3. 今日總下注額
+    並回傳兩組推薦訊號 (signal combos)。
     範例輸入：
       未開轉數 : 120
       今日RTP%數 : 105
       今日總下注額 : 45000
     """
 
-    # 解析輸入文字
+    # 推薦訊號池（保留你原始的項目與上限）
+    signals_pool = [
+        ("眼睛", 7), ("刀子", 7), ("弓箭", 7), ("蛇", 7),
+        ("紅寶石", 7), ("藍寶石", 7), ("黃寶石", 7), ("綠寶石", 7), ("紫寶石", 7),
+        ("聖甲蟲", 3)
+    ]
+
+    # 產生兩組訊號組合（每組 2~3 個訊號，且總數量 <= 12）
+    all_combos = []
+    for _ in range(2):
+        attempts = 0
+        while True:
+            attempts += 1
+            chosen = random.sample(signals_pool, k=random.choice([2, 3]))
+            combo = [(s[0], random.randint(1, s[1])) for s in chosen]
+            if sum(q for _, q in combo) <= 12:
+                all_combos.append(combo)
+                break
+            if attempts > 30:
+                # fallback：把每個訊號數量設為 1
+                all_combos.append([(s[0], 1) for s in chosen])
+                break
+
+    # 儲存訊號統計（若你不想每次都存，之後我可以改成只存某些情況）
+    try:
+        save_signal_stats(all_combos)
+    except Exception:
+        pass
+
+    # 構建 signal_text 用於回覆
+    signal_text = '\n\n'.join(['\n'.join([f"{s}：{q}顆" for s, q in combo]) for combo in all_combos])
+
+    # 解析輸入（只抓三項）
     lines = {}
     for line in msg.split('\n'):
         if ':' in line:
@@ -130,10 +183,10 @@ def fake_human_like_reply(msg, line_user_id):
     except Exception:
         return "❌ 分析失敗，請確認輸入格式及數值正確（整數、無小數點或符號）。\n\n範例：\n未開轉數 : 120\n今日RTP%數 : 105\n今日總下注額 : 45000"
 
-    # === 分析邏輯 ===
+    # === 簡化風險評分（只根據三項） ===
     risk_score = 0
 
-    # 未開轉數判斷
+    # 未開轉數（閾值保留原設定）
     if not_open > 250:
         risk_score += 2
     elif not_open > 150:
@@ -141,7 +194,7 @@ def fake_human_like_reply(msg, line_user_id):
     elif not_open < 50:
         risk_score -= 1
 
-    # RTP%數判斷
+    # RTP%數
     if rtp_today > 120:
         risk_score += 2
     elif rtp_today > 110:
@@ -149,13 +202,13 @@ def fake_human_like_reply(msg, line_user_id):
     elif rtp_today < 90:
         risk_score -= 1
 
-    # 今日總下注額判斷
+    # 今日總下注額
     if bets_today >= 80000:
         risk_score -= 1
     elif bets_today < 30000:
         risk_score += 1
 
-    # === 分析結果分類 ===
+    # 分類並選擇建議
     if risk_score >= 3:
         risk_level = "🚨 高風險"
         strategy = "建議僅觀察，暫不進場。"
@@ -169,13 +222,19 @@ def fake_human_like_reply(msg, line_user_id):
         strategy = "建議可進場觀察，適合穩定操作。"
         advice = "房間數據良好，可考慮逐步提高注額。"
 
-    update_member_preference(line_user_id, strategy)
+    # 儲存會員偏好（非必要，但保留）
+    try:
+        update_member_preference(line_user_id, strategy)
+    except Exception:
+        pass
 
+    # 最終回覆：包含風險、建議與兩組推薦訊號
     return (
         f"📊 房間分析結果如下：\n"
         f"風險等級：{risk_level}\n"
         f"建議策略：{strategy}\n"
         f"說明：{advice}\n\n"
+        f"🔎 推薦訊號（共兩組）：\n{signal_text}\n\n"
         f"✨ 若需進一步打法策略，請聯絡阿東超人：LINE ID adong8989"
     )
 
@@ -223,6 +282,7 @@ def handle_message(event):
 
         elif msg == "房間資訊表格":
             reply = (
+                "請依以下格式輸入三項資料進行分析：\n\n"
                 "未開轉數 :\n"
                 "今日RTP%數 :\n"
                 "今日總下注額 :"
@@ -247,7 +307,7 @@ def handle_message(event):
                     save_analysis_log(user_id, msg_hash, reply)
                     increment_usage(user_id)
                     used += 1
-                    reply += f"\n\n✅ 分析完成（今日剩餘 {limit - used} / {limit} 次）"
+                    reply += f"\n\n✅ 分析完成（今日剩餘 {limit - used} / {limit} 次
 
         elif msg == "使用說明":
             reply = (
@@ -259,7 +319,7 @@ def handle_message(event):
                 "⚠️ 注意事項：\n"
                 "1️⃣ 所有數值請填整數（無小數點或 % 符號）\n"
                 "2️⃣ 分析結果分為高 / 中 / 低風險\n"
-                "3️⃣ 每日使用次數：normal 15 次，vip 50 次"
+                "3️⃣ 每日使用次數：普通會員 15 次，vip會員 50 次"
             )
 
         else:
