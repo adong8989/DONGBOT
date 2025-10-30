@@ -408,26 +408,34 @@ def handle_message(event):
                 reply = "❌ 你不是管理員，無法執行此操作。"
 
         # Analysis flow: avoid duplicate analysis first
-        elif "RTP" in msg or "轉" in msg:
-            prev = get_previous_reply(user_id, msg_hash)
-            if prev:
-                # Already analyzed: return existing result, do NOT deduct usage
-                reply = f"此資料已分析過（避免重複分析）：\n\n{prev}"
+                elif "RTP" in msg or "轉" in msg:
+            # 檢查會員資料
+            if not member_data:
+                reply = "⚠️ 尚未開通會員資格，請先傳送「我要開通」申請使用分析功能。"
+            elif member_data.get("status") != "approved":
+                current_status = member_data.get("status", "pending")
+                reply = f"⚠️ 您的會員尚未通過審核（目前狀態：{current_status}）。\n請加管理員 LINE: adong8989 申請開通。"
             else:
-                # Not analyzed yet => check usage limit
-                level = member_data.get("member_level", "normal") if member_data else "normal"
-                limit = 50 if level == "vip" else 15
-                used = get_usage_today(user_id)
-
-                if used >= limit:
-                    reply = f"⚠️ 今日已達使用上限（{limit}次），請明日再試或升級 VIP。"
+                # 檢查是否已分析過
+                prev = get_previous_reply(user_id, msg_hash)
+                if prev:
+                    reply = f"此資料已分析過（避免重複分析）：\n\n{prev}"
                 else:
-                    # run analysis
-                    reply = fake_human_like_reply(msg, user_id)
-                    save_analysis_log(user_id, msg_hash, reply)
-                    increment_usage(user_id)
-                    used_after = get_usage_today(user_id)
-                    reply += f"\n\n✅ 分析完成（今日剩餘 {limit - used_after} / {limit} 次）"
+                    # 檢查使用次數
+                    level = member_data.get("member_level", "normal")
+                    limit = 50 if level == "vip" else 15
+                    used = get_usage_today(user_id)
+
+                    if used >= limit:
+                        reply = f"⚠️ 今日已達使用上限（{limit}次），請明日再試或升級 VIP。"
+                    else:
+                        # 執行分析
+                        reply = fake_human_like_reply(msg, user_id)
+                        save_analysis_log(user_id, msg_hash, reply)
+                        increment_usage(user_id)
+                        used_after = get_usage_today(user_id)
+                        reply += f"\n\n✅ 分析完成（今日剩餘 {limit - used_after} / {limit} 次）"
+
 
         else:
             reply = "請傳送房間資訊或使用下方快速選單進行操作。"
