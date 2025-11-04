@@ -1,0 +1,18 @@
+export default {
+  async fetch(request, env, ctx) {
+    // 立即回覆 LINE，避免超時
+    const init = { status: 200, headers: { 'Content-Type': 'text/plain' } };
+    const response = new Response('OK', init);
+
+    // 異步轉送 webhook 到你的 Render 服務
+    ctx.waitUntil(
+      fetch("https://your-app-name.onrender.com/callback", {
+        method: "POST",
+        headers: request.headers,
+        body: request.body,
+      }).catch(err => console.error("Relay error:", err))
+    );
+
+    return response;
+  }
+};
