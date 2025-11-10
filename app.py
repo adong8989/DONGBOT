@@ -21,7 +21,6 @@ from linebot.v3.messaging import (
     Configuration,
     ApiClient,
     MessagingApi,
-    ContentApi, # 正確的內容下載 API
     TextMessage,
     ReplyMessageRequest
 )
