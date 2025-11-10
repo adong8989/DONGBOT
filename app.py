@@ -2,8 +2,8 @@ import os
 import tempfile
 import logging
 import io
-import re 
-import json 
+import re
+import json
 import hashlib
 import random
 from datetime import datetime, timezone, timedelta
@@ -14,9 +14,8 @@ from flask import Flask, request, abort, jsonify
 # Supabase SDK
 from supabase import create_client
 
-# LINE SDK v3 
-from linebot.v3.webhook import WebhookHandler
-from linebot.v3.webhooks import MessageEvent
+# LINE SDK v3
+from linebot.v3.webhooks import WebhookHandler, MessageEvent
 from linebot.v3.messaging import (
     Configuration,
     ApiClient,
@@ -25,9 +24,9 @@ from linebot.v3.messaging import (
     ReplyMessageRequest
 )
 from linebot.v3.messaging.models import (
-    QuickReply, 
-    QuickReplyItem, 
-    MessageAction, 
+    QuickReply,
+    QuickReplyItem,
+    MessageAction,
     URIAction
 )
 from linebot.v3.messaging.exceptions import ApiException
@@ -36,10 +35,13 @@ from linebot.v3.exceptions import InvalidSignatureError
 # Google Cloud Vision SDK
 try:
     from google.cloud import vision
-    from google.api_core import exceptions as gcp_exceptions 
+    from google.api_core import exceptions as gcp_exceptions
+    # 由於 ContentApi 已經移除，我們需要從 MessagingApi 導入它的類型提示 (雖然在 runtime 只是 MessagingApi)
+    from linebot.v3.messaging import MessagingApi as ContentApiType # <-- 修正 ContentApi 的類型引用
 except ImportError:
     vision = None
     gcp_exceptions = None
+    ContentApiType = None
     print("WARNING: google-cloud-vision SDK not found. OCR functionality will be disabled.")
 
 
@@ -50,9 +52,9 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-ADMIN_LINE_ID = os.getenv("ADMIN_LINE_ID", "") 
-AUTO_SAVE_SIGNALS = os.getenv("AUTO_SAVE_SIGNALS", "false").lower() in ("1", "true", "yes") 
-GCP_SA_KEY_JSON = os.getenv("GCP_SA_KEY_JSON") 
+ADMIN_LINE_ID = os.getenv("ADMIN_LINE_ID", "")
+AUTO_SAVE_SIGNALS = os.getenv("AUTO_SAVE_SIGNALS", "false").lower() in ("1", "true", "yes")
+GCP_SA_KEY_JSON = os.getenv("GCP_SA_KEY_JSON")
 
 # 訊號池環境變數
 SIGNALS_POOL_ENV = os.getenv("SIGNALS_POOL", "")
@@ -73,7 +75,7 @@ logger = logging.getLogger(__name__)
 
 # === Google Cloud Vision Client 初始化與憑證設定 ===
 vision_client = None
-VISION_CREDENTIALS_FILE = None 
+VISION_CREDENTIALS_FILE = None
 
 if GCP_SA_KEY_JSON and vision:
     try:
@@ -82,7 +84,7 @@ if GCP_SA_KEY_JSON and vision:
         with tempfile.NamedTemporaryFile(mode="w", delete=False) as tmp_file:
             tmp_file.write(GCP_SA_KEY_JSON)
             VISION_CREDENTIALS_FILE = tmp_file.name
-            
+
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = VISION_CREDENTIALS_FILE
         vision_client = vision.ImageAnnotatorClient()
         logger.info("✅ Google Cloud Vision 客戶端初始化成功。")
@@ -247,10 +249,11 @@ def update_member_preference(line_user_id, strategy):
     except Exception:
         logger.exception("[update_member_preference error]")
         
-# === OCR 提取函數 (使用 ContentApi) ===
-def ocr_and_extract_data(message_id, line_content_api: ContentApi):
+# === OCR 提取函數 (使用 MessagingApi) ===
+def ocr_and_extract_data(message_id, line_content_api: ContentApiType):
     """
     從 LINE 下載圖片，使用 Google Cloud Vision 執行 OCR，並提取所需的數字。
+    注意：在 v3 SDK 中，line_content_api 實際上是 MessagingApi 實例。
     返回 (text_for_analysis, error_msg)
     """
     if not vision_client:
@@ -259,8 +262,8 @@ def ocr_and_extract_data(message_id, line_content_api: ContentApi):
     image_bytes = None
     
     try:
-        # 1. 下載圖片內容 (使用 ContentApi 的 get_message_content)
-        # ContentApi 的 get_message_content() 返回一個 context manager
+        # 1. 下載圖片內容 (使用 MessagingApi 的 get_message_content)
+        # MessagingApi 的 get_message_content() 返回一個 context manager
         with line_content_api.get_message_content(message_id=message_id) as message_content:
             
             # 使用 read_chunk() 讀取內容流，確保處理大文件時不會 OOM
@@ -514,9 +517,9 @@ def handle_message(event):
 
     # 使用 ApiClient context manager 來確保連線資源被妥善管理
     with ApiClient(configuration) as api_client:
-        # 1. 初始化 Messaging 和 Content 客戶端
-        line_bot_api = MessagingApi(api_client) # 用於發送回覆
-        line_content_api = ContentApi(api_client) # 用於下載圖片/內容
+        # 1. 初始化 Messaging 客戶端
+        # line_bot_api 用於發送回覆，同時也用於下載圖片/內容
+        line_bot_api = MessagingApi(api_client) 
         
         member_data = get_member(user_id)
         
@@ -531,8 +534,8 @@ def handle_message(event):
             elif event.message.type == "image":
                 app.logger.info(f"[DEBUG] user_id: {user_id}, 收到圖片訊息。")
                 
-                # 執行 OCR 和數據提取
-                text_for_analysis, error_msg = ocr_and_extract_data(event.message.id, line_content_api)
+                # 執行 OCR 和數據提取。我們將 line_bot_api (MessagingApi) 傳遞給函數。
+                text_for_analysis, error_msg = ocr_and_extract_data(event.message.id, line_bot_api)
                 
                 if error_msg:
                     reply = error_msg
@@ -612,7 +615,7 @@ def handle_message(event):
             # 確保沒有被固定指令覆蓋，且是分析請求 (圖片 OCR 成功也視為分析請求)
             is_analysis_request = msg_for_analysis and ("RTP" in msg_for_analysis or "轉" in msg_for_analysis or "注額" in msg_for_analysis)
             
-            if is_analysis_request and not reply: 
+            if is_analysis_request and not reply:
                 
                 prev = get_previous_reply(user_id, msg_hash)
                 if prev:
