@@ -240,12 +240,24 @@ def ocr_and_extract_data(message_id, line_bot_api):
     try:
         # 1. 下載圖片內容 (以 bytes 格式)
         message_content = line_bot_api.get_message_content(message_id=message_id)
-        # 修正: 使用 .read() 方法來獲取串流物件中的所有位元組資料，避免 AttributeError
-        image_bytes = message_content.read() 
         
+        # 為了避免 AttributeError，我們安全地檢查物件屬性，因為 LINE SDK 的行為可能因環境而異。
+        # LINE v3 SDK 標準是返回一個 file-like object，應使用 .read()。
+        if hasattr(message_content, 'read'):
+            logger.info("使用 message_content.read() 讀取圖片內容 (v3 標準)。")
+            image_bytes = message_content.read()
+        elif hasattr(message_content, 'content'):
+            logger.info("使用 message_content.content 讀取圖片內容 (v2/特定環境 fallback)。")
+            image_bytes = message_content.content
+        else:
+            raise TypeError(f"LINE API 響應物件類型錯誤，無法讀取圖片內容: {type(message_content)}")
+
     except Exception as e:
         logger.error(f"❌ LINE 圖片下載失敗: {e}")
-        return None, f"❌ 圖片下載失敗，請檢查 LINE 憑證和存取權限。詳細錯誤: {e.__class__.__name__}"
+        error_msg = f"❌ 圖片下載失敗，請檢查 LINE 憑證和存取權限。詳細錯誤: {e.__class__.__name__}。\n"
+        if isinstance(e, AttributeError) or isinstance(e, TypeError):
+             error_msg += "可能原因：您的 LINE SDK 版本與程式碼的圖片讀取方式不匹配。"
+        return None, error_msg
         
     try:
         # 2. 執行 OCR
@@ -263,8 +275,6 @@ def ocr_and_extract_data(message_id, line_bot_api):
         # 3. 優化提取數據 (鎖定今日數據，處理浮點數)
         
         # 浮點數/整數匹配模式: 匹配數字、逗號、可選的小數點及其後數字
-        # FLOAT_PATTERN = r'(\d{1,3}(?:,\d{3})*(?:\.\d+)?)' 
-        # 修正: 確保能匹配所有有效的數字，包括純整數、帶小數點、帶逗號的數字
         FLOAT_PATTERN = r'(\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+\.\d+)' 
 
         # 1. 提取未開轉數 (在左上角，優先匹配 '未開' 和 '轉')
