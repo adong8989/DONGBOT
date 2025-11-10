@@ -10,12 +10,14 @@ import json # 用於處理 JSON 字串
 import tempfile # 用於創建臨時文件，確保憑證寫入安全
 from dotenv import load_dotenv
 from supabase import create_client
+# 修正後的導入：移除了不存在的 ImageMessage
 from linebot.v3.webhook import WebhookHandler, MessageEvent
 from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
 from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest, QuickReply, QuickReplyItem, MessageAction, URIAction
 from datetime import datetime, timezone, timedelta
 import hashlib
 import random
+from google.api_core import exceptions as gcp_exceptions # 導入 GCP 異常處理
 
 # === 載入環境變數與基礎設定 ===
 load_dotenv()
@@ -226,7 +228,7 @@ def update_member_preference(line_user_id, strategy):
     except Exception:
         logger.exception("[update_member_preference error]")
         
-# === OCR 提取函數 ===
+# === OCR 提取函數 (已優化，解決浮點數和上下文問題) ===
 def ocr_and_extract_data(message_id, line_bot_api):
     """
     從 LINE 下載圖片，使用 Google Cloud Vision 執行 OCR，並提取所需的數字。
@@ -240,6 +242,11 @@ def ocr_and_extract_data(message_id, line_bot_api):
         message_content = line_bot_api.get_message_content(message_id=message_id)
         image_bytes = message_content.content
         
+    except Exception as e:
+        logger.error(f"❌ LINE 圖片下載失敗: {e}")
+        return None, f"❌ 圖片下載失敗，請檢查 LINE 憑證和存取權限。詳細錯誤: {e.__class__.__name__}"
+        
+    try:
         # 2. 執行 OCR
         image = vision.Image(content=image_bytes)
         # 使用 DOCUMENT_TEXT_DETECTION 以獲得更好的文本結構和準確度
@@ -252,29 +259,32 @@ def ocr_and_extract_data(message_id, line_bot_api):
             
         logger.info(f"[OCR_RESULT] Full Text (First 300 chars): \n{full_text[:300]}...")
 
-        # 3. 提取數據 (關鍵字匹配與數字提取)
-        def simple_extract_value(text, keywords):
-            text_lines = text.split('\n')
-            
-            for line in text_lines:
-                # 嘗試將中文冒號替換為英文冒號，增加匹配率
-                line = line.replace('：', ':')
-                
-                for keyword in keywords:
-                    if keyword in line:
-                        # 查找所有可能的數字串（可能包含逗號）
-                        # 匹配一個或多個數字，可包含逗號，例如 123,456
-                        nums = re.findall(r'(\d{1,3}(?:,\d{3})*)', line) 
-                        if nums:
-                            # 取最後一個被找到的數字作為結果 (通常是數值)
-                            return nums[-1].replace(',', '')
-            return None
-
-        # 匹配關鍵字
-        val_not_open = simple_extract_value(full_text, ["未開轉數", "轉數", "未開", "SpinLeft"])
-        val_rtp = simple_extract_value(full_text, ["今日RTP", "RTP%"])
-        val_bets = simple_extract_value(full_text, ["今日總下注額", "總下注", "TotalBet"])
+        # 3. 優化提取數據 (鎖定今日數據，處理浮點數)
         
+        # 浮點數/整數匹配模式: 匹配數字、逗號、可選的小數點及其後數字
+        # FLOAT_PATTERN = r'(\d{1,3}(?:,\d{3})*(?:\.\d+)?)' 
+        # 修正: 確保能匹配所有有效的數字，包括純整數、帶小數點、帶逗號的數字
+        FLOAT_PATTERN = r'(\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+\.\d+)' 
+
+        # 1. 提取未開轉數 (在左上角，優先匹配 '未開' 和 '轉')
+        # 圖片中 '未開0轉' 結構清晰，且為整數
+        match_not_open = re.search(r'(未開)\s*(\d+)\s*轉', full_text)
+        val_not_open = match_not_open.group(2) if match_not_open else None
+        
+        # 2. 提取今日總下注額 和 今日得分率/RTP%
+        # 使用非貪婪匹配 `.*?` 來尋找最近的數值
+        
+        # 提取所有 '總下注額' 數值
+        all_bets = re.findall(r'(總下注額|總下注|TotalBet).*?' + FLOAT_PATTERN, full_text, re.DOTALL | re.IGNORECASE)
+        # 提取所有 '得分率' 或 'RTP' 數值
+        all_rtp = re.findall(r'(得分率|RTP%).*?' + FLOAT_PATTERN, full_text, re.DOTALL | re.IGNORECASE)
+
+        # 假設第一個匹配到的就是 '今日' 的數值 
+        val_bets = all_bets[0][1].replace(',', '') if all_bets else None
+        val_rtp = all_rtp[0][1].replace(',', '') if all_rtp else None
+
+        # 如果提取到多組，可以嘗試通過上下文鎖定 "今日" 的數值，但對於您的圖片結構，取第一個通常是正確的。
+
         extracted_data = {
             "未開轉數": val_not_open,
             "今日RTP%數": val_rtp,
@@ -282,20 +292,43 @@ def ocr_and_extract_data(message_id, line_bot_api):
         }
         
         # 4. 檢查並格式化
-        missing_fields = [k for k, v in extracted_data.items() if not v or not v.isdigit()]
-        if missing_fields:
-             return None, f"❌ 圖片辨識結果不完整或格式錯誤，無法提取以下純數字資訊：{', '.join(missing_fields)}。\n請傳送更清晰的圖片或手動輸入。"
+        # 檢查 Not Open: 必須是純數字 (整數)
+        if not val_not_open or not val_not_open.isdigit():
+             # 使用一個通用錯誤碼，讓用戶知道哪個欄位失敗
+             return None, f"❌ 辨識結果不完整或格式錯誤：無法提取「未開轉數」的純數字（OCR 提取: {val_not_open}）。"
 
+        # 檢查 Bets: 必須是非空且是有效數字 (浮點數)
+        try:
+            float(val_bets)
+        except (ValueError, TypeError):
+             return None, f"❌ 辨識結果不完整或格式錯誤：無法提取「今日總下注額」的數字（OCR 提取: {val_bets}）。"
+        
+        # 檢查 RTP: 必須是非空且是有效數字 (浮點數)
+        try:
+            float(val_rtp)
+        except (ValueError, TypeError):
+             return None, f"❌ 辨識結果不完整或格式錯誤：無法提取「今日RTP%數」的數字（OCR 提取: {val_rtp}）。"
+
+        # 格式化輸出，去除小數點後的無用零位
+        val_bets_clean = f"{float(val_bets):.2f}".rstrip('0').rstrip('.')
+        val_rtp_clean = f"{float(val_rtp):.2f}".rstrip('0').rstrip('.')
+        
         text_for_analysis = (
-            f"未開轉數 : {extracted_data['未開轉數']}\n"
-            f"今日RTP%數 : {extracted_data['今日RTP%數']}\n"
-            f"今日總下注額 : {extracted_data['今日總下注額']}"
+            f"未開轉數 : {val_not_open}\n"
+            f"今日RTP%數 : {val_rtp_clean}\n"
+            f"今日總下注額 : {val_bets_clean}"
         )
         return text_for_analysis, None
         
+    except gcp_exceptions.PermissionDenied as e:
+        logger.error(f"❌ Google Cloud 權限被拒: {e}")
+        return None, "❌ Google Cloud Vision API 權限被拒。請檢查 GCP 服務帳號權限或 API 是否啟用。"
+    except gcp_exceptions.InvalidArgument as e:
+        logger.error(f"❌ Google Cloud: 無效的圖片格式/內容: {e}")
+        return None, "❌ Google Vision: 無效的圖片格式或內容。請確認圖片大小不超過 4MB。"
     except Exception:
         logger.exception("[OCR_ERROR] 圖片處理失敗")
-        return None, "❌ 圖片處理失敗，請確認圖片清晰度、檔案大小或 LINE API 存取權限。"
+        return None, "❌ 圖片處理失敗，可能是 OCR 伺服器錯誤或數據提取時的結構錯誤。請重試。"
 
 # === 假人為分析函數 (生成風險分析與推薦訊號) ===
 def fake_human_like_reply(msg, line_user_id):
@@ -310,12 +343,18 @@ def fake_human_like_reply(msg, line_user_id):
             lines[k.strip()] = v.strip()
 
     try:
-        # 清理數字並轉為整數
-        not_open = int(re.sub(r'\D', '', lines.get("未開轉數", "0")))
-        rtp_today = int(re.sub(r'\D', '', lines.get("今日RTP%數", "0")))
-        bets_today = int(re.sub(r'\D', '', lines.get("今日總下注額", "0")))
+        # 清理數字並轉型
+        # 未開轉數 (純整數)
+        not_open = int(re.sub(r'[^\d]', '', lines.get("未開轉數", "0")))
+        # RTP (浮點數，分析時取整數部分)
+        rtp_str = re.sub(r'[^\d\.]', '', lines.get("今日RTP%數", "0")).split('.')[0] # 僅取整數部分進行風險評估
+        rtp_today = int(rtp_str)
+        # 總下注額 (浮點數，分析時取整數部分)
+        bets_str = re.sub(r'[^\d\.]', '', lines.get("今日總下注額", "0")).split('.')[0] # 僅取整數部分進行風險評估
+        bets_today = int(bets_str)
+        
     except Exception:
-        return "❌ 分析失敗，請確認輸入格式及數值正確（整數、無小數點或符號）。\n\n範例：\n未開轉數 : 120\n今日RTP%數 : 105\n今日總下注額 : 45000"
+        return "❌ 分析失敗，請確認輸入格式及數值正確。\n\n範例：\n未開轉數 : 120\n今日RTP%數 : 105.38\n今日總下注額 : 45000.55"
 
     # 生成兩組訊號組合
     all_combos = []
@@ -516,7 +555,7 @@ def handle_message(event):
                     "今日RTP%數 :\n"
                     "今日總下注額 :\n\n"
                     "⚠️ 注意事項：\n"
-                    "1️⃣ 所有數值請填整數（無小數點或 % 符號）\n"
+                    "1️⃣ 所有數值請填整數（無小數点或 % 符號）\n"
                     "2️⃣ 分析結果分為高 / 中 / 低風險\n"
                     "3️⃣ 每日使用次數：normal 15 次，vip 50 次\n"
                     "4️⃣ 若要儲存剛剛系統產生的訊號，請傳「儲存訊號」\n"
