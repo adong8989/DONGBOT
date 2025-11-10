@@ -10,10 +10,11 @@ import json # 用於處理 JSON 字串
 import tempfile # 用於創建臨時文件，確保憑證寫入安全
 from dotenv import load_dotenv
 from supabase import create_client
-# 修正後的導入：移除了不存在的 ImageMessage
 from linebot.v3.webhook import WebhookHandler, MessageEvent
-from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
+# 修正導入：加入 MessagingApiBlob 專門用於處理內容下載
+from linebot.v3.messaging import MessagingApi, Configuration, ApiClient, MessagingApiBlob 
 from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest, QuickReply, QuickReplyItem, MessageAction, URIAction
+from linebot.v3.exceptions import ApiException # 專門處理 LINE API 錯誤
 from datetime import datetime, timezone, timedelta
 import hashlib
 import random
@@ -50,25 +51,19 @@ required_envs = ["LINE_CHANNEL_SECRET", "LINE_CHANNEL_ACCESS_TOKEN", "SUPABASE_U
 
 # === Google Cloud Vision Client 初始化與憑證設定 ===
 vision_client = None
-# 使用臨時文件來安全地處理 JSON 憑證字串
-VISION_CREDENTIALS_FILE = None # 稍後會被設定為臨時檔案路徑
+VISION_CREDENTIALS_FILE = None 
 
 if GCP_SA_KEY_JSON:
     try:
-        # 1. 確保 JSON 格式正確
         json.loads(GCP_SA_KEY_JSON)
-        # 2. 創建一個臨時文件，並將 JSON 字串寫入，供 Google 函式庫讀取
         with tempfile.NamedTemporaryFile(mode="w", delete=False) as tmp_file:
             tmp_file.write(GCP_SA_KEY_JSON)
             VISION_CREDENTIALS_FILE = tmp_file.name
         
-        # 3. 設定 GOOGLE_APPLICATION_CREDENTIALS 環境變數指向此臨時文件
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = VISION_CREDENTIALS_FILE
         logger.info(f"GCP credentials set up successfully using temporary file: {VISION_CREDENTIALS_FILE}")
         
-        # 確保 Google Cloud Vision 函式庫已經安裝
         from google.cloud import vision
-        # 嘗試初始化 Vision Client (現在它會使用上面設定的環境變數)
         vision_client = vision.ImageAnnotatorClient()
         logger.info("Google Cloud Vision 客戶端初始化成功。")
 
@@ -229,7 +224,8 @@ def update_member_preference(line_user_id, strategy):
         logger.exception("[update_member_preference error]")
         
 # === OCR 提取函數 (已優化，解決浮點數和上下文問題) ===
-def ocr_and_extract_data(message_id, line_bot_api):
+# 變更 line_bot_api 為 line_content_api 以明確指明用於下載內容
+def ocr_and_extract_data(message_id, line_content_api):
     """
     從 LINE 下載圖片，使用 Google Cloud Vision 執行 OCR，並提取所需的數字。
     返回 (text_for_analysis, error_msg)
@@ -240,21 +236,18 @@ def ocr_and_extract_data(message_id, line_bot_api):
     image_bytes = None
     
     try:
-        # 1. 下載圖片內容 (以 bytes 格式)
-        message_content = line_bot_api.get_message_content(message_id=message_id)
+        # 1. 下載圖片內容 (使用正確的 line_content_api 呼叫 get_message_content)
+        message_content = line_content_api.get_message_content(message_id=message_id)
         
         # 紀錄物件類型，用於除錯
-        logger.info(f"LINE API 返回的圖片內容物件類型: {type(message_content)}")
+        logger.info(f"LINE API 成功返回物件，類型: {type(message_content)}")
         
         # 嘗試從物件中提取位元組數據，使用多種方式以增強兼容性。
         if isinstance(message_content, bytes):
-            # 情況 1: 物件本身就是位元組數據 (很少見，但以防萬一)
             image_bytes = message_content
         elif hasattr(message_content, 'read'):
-            # 情況 2: 標準的 file-like object (v3 推薦)
             image_bytes = message_content.read()
         elif hasattr(message_content, 'content'):
-            # 情況 3: 舊版 SDK 或 requests.Response object
             image_bytes = message_content.content
         else:
             raise TypeError(f"LINE API 響應物件類型錯誤，無法讀取圖片內容: {type(message_content)}")
@@ -263,11 +256,15 @@ def ocr_and_extract_data(message_id, line_bot_api):
         if not image_bytes:
             raise ValueError("獲取的圖片位元組為空，可能是下載失敗。")
 
+    except ApiException as e:
+        logger.error(f"❌ LINE API 錯誤 (ApiException): {e}")
+        return None, f"❌ LINE API 錯誤 (ApiException)。請確認訊息 ID 是否仍在有效期內，或檢查 LINE Channel 憑證和權限。\n詳細錯誤: {e}"
+
     except Exception as e:
-        logger.error(f"❌ LINE 圖片下載失敗: {e}")
-        error_msg = f"❌ 圖片下載失敗，請檢查 LINE 憑證和存取權限。詳細錯誤: {e.__class__.__name__}。"
+        logger.error(f"❌ 圖片下載或讀取失敗 (Exception): {e}")
+        error_msg = f"❌ 圖片下載或讀取失敗。請檢查 LINE 憑證和存取權限。詳細錯誤: {e.__class__.__name__}。"
         if isinstance(e, AttributeError) or isinstance(e, TypeError):
-             error_msg += "\n可能原因：您的 LINE SDK 版本與程式碼的圖片讀取方式不匹配。"
+             error_msg += "\n可能原因：您的 LINE SDK 版本與程式碼的圖片讀取方式不匹配，或 SDK 返回了一個損壞的錯誤物件。"
         elif isinstance(e, ValueError) and "為空" in str(e):
              error_msg = f"❌ 圖片下載失敗，請檢查 LINE 憑證和存取權限。詳細錯誤: 圖片內容為空。"
         return None, error_msg
@@ -275,7 +272,6 @@ def ocr_and_extract_data(message_id, line_bot_api):
     try:
         # 2. 執行 OCR
         image = vision.Image(content=image_bytes)
-        # 使用 DOCUMENT_TEXT_DETECTION 以獲得更好的文本結構和準確度
         response = vision_client.document_text_detection(image=image)
         
         full_text = response.full_text_annotation.text if response.full_text_annotation else ""
@@ -287,27 +283,16 @@ def ocr_and_extract_data(message_id, line_bot_api):
 
         # 3. 優化提取數據 (鎖定今日數據，處理浮點數)
         
-        # 浮點數/整數匹配模式: 匹配數字、逗號、可選的小數點及其後數字
         FLOAT_PATTERN = r'(\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+\.\d+)' 
 
-        # 1. 提取未開轉數 (在左上角，優先匹配 '未開' 和 '轉')
-        # 圖片中 '未開0轉' 結構清晰，且為整數
         match_not_open = re.search(r'(未開)\s*(\d+)\s*轉', full_text)
         val_not_open = match_not_open.group(2) if match_not_open else None
         
-        # 2. 提取今日總下注額 和 今日得分率/RTP%
-        # 使用非貪婪匹配 `.*?` 來尋找最近的數值
-        
-        # 提取所有 '總下注額' 數值
         all_bets = re.findall(r'(總下注額|總下注|TotalBet).*?' + FLOAT_PATTERN, full_text, re.DOTALL | re.IGNORECASE)
-        # 提取所有 '得分率' 或 'RTP' 數值
         all_rtp = re.findall(r'(得分率|RTP%).*?' + FLOAT_PATTERN, full_text, re.DOTALL | re.IGNORECASE)
 
-        # 假設第一個匹配到的就是 '今日' 的數值 
         val_bets = all_bets[0][1].replace(',', '') if all_bets else None
         val_rtp = all_rtp[0][1].replace(',', '') if all_rtp else None
-
-        # 如果提取到多組，可以嘗試通過上下文鎖定 "今日" 的數值，但對於您的圖片結構，取第一個通常是正確的。
 
         extracted_data = {
             "未開轉數": val_not_open,
@@ -316,24 +301,19 @@ def ocr_and_extract_data(message_id, line_bot_api):
         }
         
         # 4. 檢查並格式化
-        # 檢查 Not Open: 必須是純數字 (整數)
         if not val_not_open or not val_not_open.isdigit():
-             # 使用一個通用錯誤碼，讓用戶知道哪個欄位失敗
              return None, f"❌ 辨識結果不完整或格式錯誤：無法提取「未開轉數」的純數字（OCR 提取: {val_not_open}）。"
 
-        # 檢查 Bets: 必須是非空且是有效數字 (浮點數)
         try:
             float(val_bets)
         except (ValueError, TypeError):
              return None, f"❌ 辨識結果不完整或格式錯誤：無法提取「今日總下注額」的數字（OCR 提取: {val_bets}）。"
         
-        # 檢查 RTP: 必須是非空且是有效數字 (浮點數)
         try:
             float(val_rtp)
         except (ValueError, TypeError):
              return None, f"❌ 辨識結果不完整或格式錯誤：無法提取「今日RTP%數」的數字（OCR 提取: {val_rtp}）。"
 
-        # 格式化輸出，去除小數點後的無用零位
         val_bets_clean = f"{float(val_bets):.2f}".rstrip('0').rstrip('.')
         val_rtp_clean = f"{float(val_rtp):.2f}".rstrip('0').rstrip('.')
         
@@ -368,13 +348,10 @@ def fake_human_like_reply(msg, line_user_id):
 
     try:
         # 清理數字並轉型
-        # 未開轉數 (純整數)
         not_open = int(re.sub(r'[^\d]', '', lines.get("未開轉數", "0")))
-        # RTP (浮點數，分析時取整數部分)
-        rtp_str = re.sub(r'[^\d\.]', '', lines.get("今日RTP%數", "0")).split('.')[0] # 僅取整數部分進行風險評估
+        rtp_str = re.sub(r'[^\d\.]', '', lines.get("今日RTP%數", "0")).split('.')[0] 
         rtp_today = int(rtp_str)
-        # 總下注額 (浮點數，分析時取整數部分)
-        bets_str = re.sub(r'[^\d\.]', '', lines.get("今日總下注額", "0")).split('.')[0] # 僅取整數部分進行風險評估
+        bets_str = re.sub(r'[^\d\.]', '', lines.get("今日總下注額", "0")).split('.')[0] 
         bets_today = int(bets_str)
         
     except Exception:
@@ -386,15 +363,12 @@ def fake_human_like_reply(msg, line_user_id):
         attempts = 0
         while True:
             attempts += 1
-            # 隨機選擇 2 到 3 個訊號
             chosen = random.sample(SIGNALS_POOL, k=random.choice([2, 3]))
-            # 為每個訊號分配隨機數量 (在上限範圍內)
             combo = [(s[0], random.randint(1, s[1])) for s in chosen]
-            # 確保總顆數不超過 12
             if sum(q for _, q in combo) <= 12:
                 all_combos.append(combo)
                 break
-            if attempts > 30: # 防止無限循環
+            if attempts > 30: 
                 all_combos.append([(s[0], 1) for s in chosen])
                 break
 
@@ -407,7 +381,6 @@ def fake_human_like_reply(msg, line_user_id):
     # 如果自動儲存開啟，則寫入資料庫
     if AUTO_SAVE_SIGNALS:
         try:
-            # save_signal_stats 接收的是多層次的 all_combos
             save_signal_stats(all_combos)
         except Exception:
             pass
@@ -523,7 +496,11 @@ def handle_message(event):
     reply = ""
 
     with ApiClient(configuration) as api_client:
+        # 1. 初始化 Messaging 客戶端 (用於發送回覆)
         line_bot_api = MessagingApi(api_client)
+        # 2. 初始化 Blob/Content 客戶端 (用於下載圖片/內容)
+        line_content_api = MessagingApiBlob(api_client) 
+        
         member_data = get_member(user_id)
 
         # 1. 處理訊息類型 (文字或圖片)
@@ -535,8 +512,8 @@ def handle_message(event):
         elif event.message.type == "image":
             logger.info(f"[DEBUG] user_id: {user_id}, 收到圖片訊息。")
             
-            # 執行 OCR 和數據提取
-            text_for_analysis, error_msg = ocr_and_extract_data(event.message.id, line_bot_api)
+            # 執行 OCR 和數據提取 (傳入正確的 line_content_api)
+            text_for_analysis, error_msg = ocr_and_extract_data(event.message.id, line_content_api)
             
             if error_msg:
                 reply = error_msg
@@ -550,7 +527,6 @@ def handle_message(event):
             reply = "目前只支援文字或圖片的房間資訊分析。"
         
         # 2. 處理固定指令 (僅對原始文字訊息執行，避免 OCR 錯誤觸發)
-        # 檢查原始訊息是否為文字類型
         if event.message.type == "text":
             msg = event.message.text.strip()
 
@@ -593,7 +569,6 @@ def handle_message(event):
                     reply = "找不到最近產生的訊號，請先送出房間資訊以產生推薦訊號，再傳「儲存訊號」。"
                 else:
                     try:
-                        # save_signal_stats 接收的是多層次的 all_combos
                         save_signal_stats(latest["combos"])
                         del LATEST_SIGNALS[user_id]
                         reply = "✅ 已儲存剛剛的推薦訊號到資料庫。"
@@ -606,7 +581,6 @@ def handle_message(event):
                     saved_count = 0
                     for uid, data in list(LATEST_SIGNALS.items()):
                         try:
-                            # save_signal_stats 接收的是多層次的 all_combos
                             save_signal_stats(data["combos"])
                             saved_count += 1
                             del LATEST_SIGNALS[uid]
