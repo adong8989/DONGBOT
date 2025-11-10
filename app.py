@@ -240,7 +240,8 @@ def ocr_and_extract_data(message_id, line_bot_api):
     try:
         # 1. 下載圖片內容 (以 bytes 格式)
         message_content = line_bot_api.get_message_content(message_id=message_id)
-        image_bytes = message_content.content
+        # 修正: 使用 .read() 方法來獲取串流物件中的所有位元組資料，避免 AttributeError
+        image_bytes = message_content.read() 
         
     except Exception as e:
         logger.error(f"❌ LINE 圖片下載失敗: {e}")
