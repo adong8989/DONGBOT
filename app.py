@@ -15,7 +15,9 @@ from flask import Flask, request, abort, jsonify
 from supabase import create_client
 
 # LINE SDK v3
-from linebot.v3.webhooks import WebhookHandler, MessageEvent
+from linebot.v3 import WebhookHandler
+from linebot.v3.messaging import ApiClient
+from linebot.v3.webhooks import MessageEvent
 from linebot.v3.messaging import (
     Configuration,
     ApiClient,
