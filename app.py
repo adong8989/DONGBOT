@@ -10,7 +10,7 @@ import json # 用於處理 JSON 字串
 import tempfile # 用於創建臨時文件，確保憑證寫入安全
 from dotenv import load_dotenv
 from supabase import create_client
-from linebot.v3.webhook import WebhookHandler, MessageEvent, ImageMessage
+from linebot.v3.webhook import WebhookHandler, MessageEvent
 from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
 from linebot.v3.messaging.models import TextMessage, ReplyMessageRequest, QuickReply, QuickReplyItem, MessageAction, URIAction
 from datetime import datetime, timezone, timedelta
