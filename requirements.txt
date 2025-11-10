@@ -8,5 +8,4 @@ Pillow
 openai
 requests
 python-dotenv
-pip install google-cloud-vision
 google-cloud-vision
