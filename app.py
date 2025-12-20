@@ -89,13 +89,13 @@ def ocr_extract(message_id, api_client):
         return None, str(e)
 
 def get_flex_card(n, r, b):
-    color = "#00C853" # 綠
+    color = "#00C853" 
     label = "✅ 低風險 / 數據優異"
     if n > NOT_OPEN_HIGH or r > RTP_HIGH:
-        color = "#D50000" # 紅
+        color = "#D50000" 
         label = "🚨 高風險 / 建議換房"
     elif n > NOT_OPEN_MED or r > RTP_MED:
-        color = "#FFAB00" # 橘
+        color = "#FFAB00" 
         label = "⚠️ 中風險 / 謹慎進場"
         
     s_pool = [("聖甲蟲", 3), ("紅寶石", 7), ("藍寶石", 7), ("眼睛", 5), ("紫寶石", 7)]
@@ -124,8 +124,10 @@ def get_flex_card(n, r, b):
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
-    try: handler.handle(body, signature)
-    except InvalidSignatureError: abort(400)
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
     return "OK"
 
 @handler.add(MessageEvent)
@@ -134,24 +136,31 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_api = MessagingApi(api_client)
         
-        m_res = supabase.table("members").select("*").eq("line_user_id", user_id).maybe_single().execute()
-        member = m_res.data
-        is_approved = member.get("status") == "approved" if member else False
-        limit = 50 if (member and member.get("member_level") == "vip") else 15
+        # --- 會員權限保護 ---
+        is_approved = False
+        limit = 15
+        try:
+            m_res = supabase.table("members").select("*").eq("line_user_id", user_id).maybe_single().execute()
+            if m_res and hasattr(m_res, 'data') and m_res.data:
+                is_approved = (m_res.data.get("status") == "approved")
+                limit = 50 if (m_res.data.get("member_level") == "vip") else 15
+        except Exception as e:
+            logger.error(f"會員查詢失敗: {e}")
 
+        # 文字處理
         if event.message.type == "text":
             msg = event.message.text.strip()
             if msg == "dong8989":
                 supabase.table("members").upsert({"line_user_id": user_id, "status": "approved"}).execute()
-                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 帳號自動開通成功！", quick_reply=get_main_menu())]))
+                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 帳號開通成功！", quick_reply=get_main_menu())]))
             
-            if msg == "使用說明":
-                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="傳送機台截圖，系統會自動分析下方黑色區域的今日數據。", quick_reply=get_main_menu())]))
-
             if msg == "我的額度":
                 today = get_tz_now().strftime('%Y-%m-%d')
-                usage = supabase.table("usage_logs").select("used_count").eq("line_user_id", user_id).eq("used_at", today).maybe_single().execute()
-                count = usage.data["used_count"] if usage.data else 0
+                count = 0
+                try:
+                    u_res = supabase.table("usage_logs").select("used_count").eq("line_user_id", user_id).eq("used_at", today).execute()
+                    if u_res and u_res.data: count = u_res.data[0]["used_count"]
+                except: pass
                 return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"📊 今日分析：{count} / {limit}", quick_reply=get_main_menu())]))
 
             if msg == "我要開通":
@@ -161,6 +170,7 @@ def handle_message(event):
                     reply = f"申請已送出。UserID: {user_id}"
                 return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=reply, quick_reply=get_main_menu())]))
 
+        # 圖片處理
         elif event.message.type == "image":
             if not is_approved:
                 return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 請先開通帳號。", quick_reply=get_main_menu())]))
@@ -168,45 +178,37 @@ def handle_message(event):
             full_text, err = ocr_extract(event.message.id, api_client)
             if err: return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"❌ OCR 錯誤: {err}")]))
             
-            # 移除所有空白以防斷字
             flat_text = "".join(full_text.split())
             
             try:
-                # 1. 抓未開 (通常在最前面或中間)
+                # 數據解析
                 n = 0
                 n_match = re.search(r"未開(\d+)", flat_text)
                 if n_match: n = int(n_match.group(1))
 
-                # 2. 抓數據策略：鎖定最後出現的數據 (今日與近30天)
-                r = 0.0
-                b = 0.0
-                
-                # 尋找所有百分比 (RTP)
+                r, b = 0.0, 0.0
                 all_pcts = re.findall(r"(\d+\.\d+)%", flat_text)
-                # 尋找所有金額格式 (下注額)
                 all_amounts = re.findall(r"(\d{1,3}(?:,\d{3})*\.\d{2})", flat_text)
 
-                if len(all_pcts) >= 2:
-                    # 倒數第2個通常是今日，倒數第1個是近30天
-                    r = float(all_pcts[-2])
-                elif all_pcts:
-                    r = float(all_pcts[0])
+                if len(all_pcts) >= 2: r = float(all_pcts[-2])
+                elif all_pcts: r = float(all_pcts[0])
 
-                if len(all_amounts) >= 2:
-                    # 同理，下注額取倒數第2個
-                    b = float(clean_num(all_amounts[-2]))
-                elif all_amounts:
-                    b = float(clean_num(all_amounts[0]))
+                if len(all_amounts) >= 2: b = float(clean_num(all_amounts[-2]))
+                elif all_amounts: b = float(clean_num(all_amounts[0]))
 
-                if r == 0.0:
-                    # 最終備案：如果還是沒抓到，噴出最後50字除錯
-                    return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"❌ 數據抓取失敗。\n辨識片段：{flat_text[-50:]}", quick_reply=get_main_menu())]))
-
-                # 紀錄並發送
+                # --- 安全次數更新 ---
                 today = get_tz_now().strftime('%Y-%m-%d')
-                u_res = supabase.table("usage_logs").select("used_count").eq("line_user_id", user_id).eq("used_at", today).maybe_single().execute()
-                new_count = (u_res.data["used_count"] + 1) if u_res.data else 1
-                supabase.table("usage_logs").upsert({"line_user_id": user_id, "used_at": today, "used_count": new_count}).execute()
+                new_count = 1
+                try:
+                    u_res = supabase.table("usage_logs").select("used_count").eq("line_user_id", user_id).eq("used_at", today).execute()
+                    if u_res and hasattr(u_res, 'data') and len(u_res.data) > 0:
+                        new_count = u_res.data[0]["used_count"] + 1
+                    supabase.table("usage_logs").upsert({"line_user_id": user_id, "used_at": today, "used_count": new_count}).execute()
+                except Exception as db_err:
+                    logger.error(f"資料庫紀錄失敗: {db_err}")
+
+                if new_count > limit:
+                    return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="今日額度已用完。")]))
 
                 flex = get_flex_card(n, r, b)
                 line_api.reply_message(ReplyMessageRequest(
@@ -217,10 +219,10 @@ def handle_message(event):
                     ]
                 ))
             except Exception as e:
-                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"❌ 解析失敗: {str(e)}", quick_reply=get_main_menu())]))
-        
-        else:
-            line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="請傳送截圖開始分析！", quick_reply=get_main_menu())]))
+                logger.error(f"主邏輯崩潰: {e}")
+                # 確保即便報錯也會回覆，避免 Line Token 過期
+                try: line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"❌ 系統暫時繁忙，請稍後再試。")]))
+                except: pass
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
