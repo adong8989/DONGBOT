@@ -23,7 +23,7 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 環境變數載入 (略，請保持原本設定)
+# === 環境變數 ===
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -44,10 +44,16 @@ try:
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = tmp_file.name
         vision_client = vision.ImageAnnotatorClient()
 except Exception as e:
-    logger.error(f"Vision Client Error: {e}")
+    logger.error(f"Vision Client Init Error: {e}")
 
-def get_tz_now(): return datetime.now(timezone(timedelta(hours=8)))
-def clean_num(text): return re.sub(r'[^\d.]', '', text.replace(',', '')) if text else "0"
+# === 工具函數 ===
+def get_tz_now():
+    return datetime.now(timezone(timedelta(hours=8)))
+
+def clean_num(text):
+    if not text: return "0"
+    return re.sub(r'[^\d.]', '', text.replace(',', ''))
+
 def get_main_menu():
     return QuickReply(items=[
         QuickReplyItem(action=MessageAction(label="🔓 我要開通", text="我要開通")),
@@ -56,7 +62,6 @@ def get_main_menu():
     ])
 
 def get_flex_card(n, r, b):
-    # (保持原本 Flex Card 邏輯...)
     color = "#00C853"
     label = "✅ 低風險 / 數據優異"
     if n > 250 or r > 120: color = "#D50000"; label = "🚨 高風險 / 建議換房"
@@ -80,6 +85,10 @@ def get_flex_card(n, r, b):
             ]}
         ]}
     }
+
+@app.route("/", methods=["GET"])
+def index():
+    return "Bot is running!"
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -106,12 +115,14 @@ def handle_message(event):
                 user_status = m_res.data.get("status", "none")
                 is_approved = (user_status == "approved")
                 limit = 50 if m_res.data.get("member_level") == "vip" else 15
-        except: pass
+        except Exception as e:
+            logger.error(f"Member DB Error: {e}")
 
+        # 2. 文字處理
         if event.message.type == "text":
             msg = event.message.text.strip()
             
-            # --- 管理員區 (用 return 確保不往下跑) ---
+            # 管理員指令
             if user_id == ADMIN_LINE_ID:
                 if msg.startswith("核准 "):
                     target_uid = msg.split(" ")[1]
@@ -126,13 +137,13 @@ def handle_message(event):
                         supabase.table("members").update({"remark": content}).eq("line_user_id", target_uid).execute()
                         return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"✅ 已備註：\nID: {target_uid}\n內容: {content}")]))
 
-            # --- 選單功能 ---
+            # 功能選單
             if msg == "我要開通":
                 if user_status == "blocked": return
                 if is_approved: return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="您已是正式會員。", quick_reply=get_main_menu())]))
                 supabase.table("members").upsert({"line_user_id": user_id, "status": "pending"}, on_conflict="line_user_id").execute()
                 if ADMIN_LINE_ID: line_api.push_message(PushMessageRequest(to=ADMIN_LINE_ID, messages=[TextMessage(text=f"🔔 申請：{user_id}\n核准 {user_id}")]))
-                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"⚠️ 未開通。請提供 ID 給管理員：\n\n{user_id}", quick_reply=get_main_menu())]))
+                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"⚠️ 未開通。請提供 ID：\n\n{user_id}", quick_reply=get_main_menu())]))
 
             if msg == "我的額度":
                 today = get_tz_now().strftime('%Y-%m-%d')
@@ -145,50 +156,38 @@ def handle_message(event):
                 txt = "📘 使用說明：\n1. 傳截圖自動分析。\n2. 手動輸入：房號 轉數 下注 RTP"
                 return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=txt)]))
 
-            # --- 分析判定 ---
+            # 數據分析
             is_line_id = msg.startswith('U') and len(msg) > 30
             clean_nums = re.findall(r'(?<![a-zA-Z])\d+(?:\.\d+)?(?![a-zA-Z])', msg)
-
             if len(clean_nums) >= 4 and is_approved and not is_line_id:
                 try:
                     room, n, b, r = clean_nums[0], int(float(clean_nums[1])), float(clean_nums[2]), float(clean_nums[3])
                     today_str = get_tz_now().strftime('%Y-%m-%d')
                     fingerprint = f"{room}_{n}_{b}"
-                    
-                    # 檢查重複
                     dup = supabase.table("usage_logs").select("*").eq("data_hash", fingerprint).eq("used_at", today_str).execute()
                     if dup and dup.data:
                         return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🚫 此數據已分析過。")]))
-                    
-                    # 計算額度
                     u_res = supabase.table("usage_logs").select("used_count").eq("line_user_id", user_id).eq("used_at", today_str).execute()
                     new_count = (u_res.data[0]["used_count"] + 1) if (u_res and u_res.data) else 1
                     if new_count > limit: return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="❌ 今日額度已滿。")]))
-                    
-                    # 更新紀錄
                     if u_res and u_res.data:
                         supabase.table("usage_logs").update({"used_count": new_count, "data_hash": fingerprint}).eq("line_user_id", user_id).eq("used_at", today_str).execute()
                     else:
                         supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "used_count": new_count, "data_hash": fingerprint}).execute()
-                    
-                    return line_api.reply_message(ReplyMessageRequest(
-                        reply_token=event.reply_token,
-                        messages=[
-                            FlexMessage(alt_text="賽特分析報告", contents=FlexContainer.from_dict(get_flex_card(n, r, b))),
-                            TextMessage(text=f"📊 今日：{new_count} / {limit}", quick_reply=get_main_menu())
-                        ]
-                    ))
+                    return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[
+                        FlexMessage(alt_text="賽特分析報告", contents=FlexContainer.from_dict(get_flex_card(n, r, b))),
+                        TextMessage(text=f"📊 今日：{new_count} / {limit}", quick_reply=get_main_menu())
+                    ]))
                 except: pass
 
+        # 3. 圖片處理
         elif event.message.type == "image":
             if not is_approved: return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"⚠️ 未開通：{user_id}")]))
-            
             blob_api = MessagingApiBlob(api_client)
             image_bytes = blob_api.get_message_content(event.message.id)
             image = vision.Image(content=image_bytes)
             response = vision_client.document_text_detection(image=image)
             flat_text = "".join((response.full_text_annotation.text if response.full_text_annotation else "").split())
-            
             n = int(re.search(r"未開(\d+)", flat_text).group(1)) if re.search(r"未開(\d+)", flat_text) else 0
             room = re.search(r"(\d{4})", flat_text).group(1) if re.search(r"(\d{4})", flat_text) else "0000"
             r, b = 0.0, 0.0
@@ -199,28 +198,22 @@ def handle_message(event):
                 if amt_m: b = float(clean_num(amt_m.group(1)))
                 pct_m = re.search(r"(\d+\.\d+)%", after_today)
                 if pct_m: r = float(pct_m.group(1))
-
             if r == 0.0: return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="❌ 無法辨識數據。")]))
-            
             today_str = get_tz_now().strftime('%Y-%m-%d')
             fingerprint = f"{room}_{n}_{b}"
-            
             dup = supabase.table("usage_logs").select("*").eq("data_hash", fingerprint).eq("used_at", today_str).execute()
             if dup and dup.data: return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🚫 數據重複。")]))
-            
             u_res = supabase.table("usage_logs").select("used_count").eq("line_user_id", user_id).eq("used_at", today_str).execute()
             new_count = (u_res.data[0]["used_count"] + 1) if (u_res and u_res.data) else 1
             if new_count > limit: return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="❌ 額度已滿。")]))
-            
             if u_res and u_res.data:
                 supabase.table("usage_logs").update({"used_count": new_count, "data_hash": fingerprint}).eq("line_user_id", user_id).eq("used_at", today_str).execute()
             else:
                 supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "used_count": new_count, "data_hash": fingerprint}).execute()
+            return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[
+                FlexMessage(alt_text="賽特分析報告", contents=FlexContainer.from_dict(get_flex_card(n, r, b))),
+                TextMessage(text=f"📊 今日：{new_count} / {limit}", quick_reply=get_main_menu())
+            ]))
 
-            return line_api.reply_message(ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[
-                    FlexMessage(alt_text="賽特分析報告", contents=FlexContainer.from_dict(get_flex_card(n, r, b))),
-                    TextMessage(text=f"📊 今日：{new_count} / {limit}", quick_reply=get_main_menu())
-                ]
-            ))
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
