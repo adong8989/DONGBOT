@@ -161,11 +161,20 @@ def handle_message(event):
                 today_str = get_tz_now().strftime('%Y-%m-%d')
                 if supabase.table("usage_logs").select("*").eq("data_hash", fingerprint).eq("used_at", today_str).execute().data:
                     return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🚫 數據重複。")]))
+                
                 new_count = 1
                 u_res = supabase.table("usage_logs").select("used_count").eq("line_user_id", user_id).eq("used_at", today_str).execute()
-                if u_res and u_res.data: new_count = u_res.data[0]["used_count"] + 1
+                if u_res and u_res.data: 
+                    new_count = u_res.data[0]["used_count"] + 1
+                
                 if new_count > limit: return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="額度已滿。")]))
-                supabase.table("usage_logs").upsert({"line_user_id": user_id, "used_at": today_str, "used_count": new_count, "data_hash": fingerprint}, on_conflict="line_user_id,used_at").execute()
+                
+                # 紀錄邏輯修正
+                if u_res and u_res.data:
+                    supabase.table("usage_logs").update({"used_count": new_count, "data_hash": fingerprint}).eq("line_user_id", user_id).eq("used_at", today_str).execute()
+                else:
+                    supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "used_count": new_count, "data_hash": fingerprint}).execute()
+
                 flex = get_flex_card(n, r, b)
                 return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[FlexMessage(alt_text="報告", contents=FlexContainer.from_dict(flex)), TextMessage(text=f"📊 今日：{new_count}/{limit}")]))
 
@@ -186,15 +195,25 @@ def handle_message(event):
                 pct_m = re.search(r"(\d+\.\d+)%", after_today)
                 if pct_m: r = float(pct_m.group(1))
             if r == 0.0: return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="❌ 無法定位數據。")]))
+            
             fingerprint = f"{room}_{n}_{b}"
             today_str = get_tz_now().strftime('%Y-%m-%d')
             if supabase.table("usage_logs").select("*").eq("data_hash", fingerprint).eq("used_at", today_str).execute().data:
                 return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🚫 數據重複。")]))
+            
             new_count = 1
             u_res = supabase.table("usage_logs").select("used_count").eq("line_user_id", user_id).eq("used_at", today_str).execute()
-            if u_res and u_res.data: new_count = u_res.data[0]["used_count"] + 1
+            if u_res and u_res.data: 
+                new_count = u_res.data[0]["used_count"] + 1
+            
             if new_count > limit: return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="額度已滿。")]))
-            supabase.table("usage_logs").upsert({"line_user_id": user_id, "used_at": today_str, "used_count": new_count, "data_hash": fingerprint}, on_conflict="line_user_id,used_at").execute()
+            
+            # 紀錄邏輯修正
+            if u_res and u_res.data:
+                supabase.table("usage_logs").update({"used_count": new_count, "data_hash": fingerprint}).eq("line_user_id", user_id).eq("used_at", today_str).execute()
+            else:
+                supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "used_count": new_count, "data_hash": fingerprint}).execute()
+
             flex = get_flex_card(n, r, b)
             line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[FlexMessage(alt_text="報告", contents=FlexContainer.from_dict(flex)), TextMessage(text=f"📊 今日：{new_count}/{limit}")]))
 
