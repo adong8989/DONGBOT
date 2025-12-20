@@ -126,8 +126,10 @@ def get_flex_card(n, r, b):
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
-    try: handler.handle(body, signature)
-    except InvalidSignatureError: abort(400)
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
     return "OK"
 
 @handler.add(MessageEvent)
@@ -144,13 +146,13 @@ def handle_message(event):
             if m_res and m_res.data:
                 is_approved = (m_res.data.get("status") == "approved")
                 limit = 50 if (m_res.data.get("member_level") == "vip") else 15
-        except: pass
+        except:
+            pass
 
         # --- 文字訊息 ---
         if event.message.type == "text":
             msg = event.message.text.strip()
 
-            # 管理員核准指令
             if user_id == ADMIN_LINE_ID and msg.startswith("核准 "):
                 target_uid = msg.split(" ")[1]
                 try:
@@ -172,10 +174,7 @@ def handle_message(event):
                     reply_text = "⏳ 申請已送出，請等候審核。"
                     if ADMIN_LINE_ID:
                         try:
-                            line_api.push_message(PushMessageRequest(
-                                to=ADMIN_LINE_ID,
-                                messages=[TextMessage(text=f"🔔 申請通知\nID: {user_id}\n指令：\n核准 {user_id}")]
-                            ))
+                            line_api.push_message(PushMessageRequest(to=ADMIN_LINE_ID, messages=[TextMessage(text=f"🔔 申請通知\nID: {user_id}\n指令：\n核准 {user_id}")]))
                         except: pass
                 return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=reply_text, quick_reply=get_main_menu())]))
 
@@ -194,30 +193,25 @@ def handle_message(event):
                 return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 請先申請開通並等待審核。", quick_reply=get_main_menu())]))
             
             full_text, err = ocr_extract(event.message.id, api_client)
-            if err: return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"❌ OCR 錯誤: {err}")]))
+            if err: 
+                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"❌ OCR 錯誤: {err}")]))
             
             flat_text = "".join(full_text.split())
             
             try:
-                # 1. 抓未開轉數
                 n = 0
                 n_match = re.search(r"未開(\d+)", flat_text)
                 if n_match: n = int(n_match.group(1))
 
-                # 2. 精確定位今日數據 (避開30日)
                 r, b = 0.0, 0.0
                 today_idx = flat_text.find("今日")
-                
                 if today_idx != -1:
                     after_today = flat_text[today_idx:]
-                    # 抓「今日」後的第一個金額
                     amt_match = re.search(r"(\d{1,3}(?:,\d{3})*\.\d{2})", after_today)
                     if amt_match: b = float(clean_num(amt_match.group(1)))
-                    # 抓「今日」後的第一個百分比
                     pct_match = re.search(r"(\d+\.\d+)%", after_today)
                     if pct_match: r = float(pct_match.group(1))
                 else:
-                    # 備案：取倒數第二組數據 (通常是今日)
                     all_pcts = re.findall(r"(\d+\.\d+)%", flat_text)
                     all_amounts = re.findall(r"(\d{1,3}(?:,\d{3})*\.\d{2})", flat_text)
                     if len(all_pcts) >= 2: r = float(all_pcts[-2])
@@ -226,14 +220,14 @@ def handle_message(event):
                 if r == 0.0:
                     return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="❌ 無法定位今日數據，請確保圖片清晰。", quick_reply=get_main_menu())]))
 
-                # 次數紀錄
                 today = get_tz_now().strftime('%Y-%m-%d')
                 new_count = 1
                 try:
                     u_res = supabase.table("usage_logs").select("used_count").eq("line_user_id", user_id).eq("used_at", today).execute()
                     if u_res and u_res.data: new_count = u_res.data[0]["used_count"] + 1
                     supabase.table("usage_logs").upsert({"line_user_id": user_id, "used_at": today, "used_count": new_count}).execute()
-                except: pass
+                except:
+                    pass
 
                 if new_count > limit:
                     return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="今日額度已用完。")]))
@@ -248,11 +242,6 @@ def handle_message(event):
                 ))
             except Exception as e:
                 line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"❌ 解析失敗: {e}")]))
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-            except Exception as e:
-                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"❌ 解析出錯: {e}")]))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
