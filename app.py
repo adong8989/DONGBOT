@@ -60,7 +60,7 @@ def get_main_menu():
     ])
 
 def get_flex_card(n, r, b, trend_text, trend_diff, room_id):
-    main_color = "#4CAF50" # 預設綠色
+    main_color = "#4CAF50" 
     main_label = "✅ 低風險 / 數據優異"
     if n > 250 or r > 120:
         main_color = "#F44336"; main_label = "🚨 高風險 / 建議換房"
@@ -100,7 +100,8 @@ def callback():
         handler.handle(body, signature)
     except Exception as e:
         logger.error(f"❌ Callback Error: {e}")
-    return "OK"
+    # 確保回傳 200 OK 防止 LINE 重傳機制導致次數亂跳
+    return "OK", 200
 
 @handler.add(MessageEvent)
 def handle_message(event):
@@ -108,7 +109,7 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_api = MessagingApi(api_client)
 
-        # 1. 權限檢查與管理員自動開通
+        # 1. 權限檢查
         is_approved = (user_id == ADMIN_LINE_ID)
         try:
             m_res = supabase.table("members").select("*").eq("line_user_id", user_id).maybe_single().execute()
@@ -131,12 +132,6 @@ def handle_message(event):
                 line_api.push_message(PushMessageRequest(to=ADMIN_LINE_ID, messages=[TextMessage(text=f"🔔 新申請！\nID: {user_id}\n核准 {user_id}")]))
                 return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 申請已送出！請等待審核。")]))
 
-            if user_id == ADMIN_LINE_ID and msg.startswith("核准 "):
-                target_uid = msg.split(" ")[1]
-                supabase.table("members").update({"status": "approved", "approved_at": get_tz_now().isoformat()}).eq("line_user_id", target_uid).execute()
-                line_api.push_message(PushMessageRequest(to=target_uid, messages=[TextMessage(text="🎉 帳號已核准開通！", quick_reply=get_main_menu())]))
-                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"✅ 已成功核准：{target_uid}")]))
-
             if msg == "我的額度":
                 today = get_tz_now().strftime('%Y-%m-%d')
                 count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today).execute()
@@ -154,39 +149,46 @@ def handle_message(event):
                 res = vision_client.document_text_detection(image=vision.Image(content=img_bytes))
                 txt = res.full_text_annotation.text if res.full_text_annotation else ""
                 
-                # --- 強化房號抓取 (取 OCR 結果最後一個 4 位數，通常在左下角) ---
-                rooms = re.findall(r"\b\d{4}\b", txt)
-                room = rooms[-1] if rooms else str(random.randint(1000, 9999))
+                # --- A. 強化房號抓取 ---
+                room_match = re.search(r"(\d{4})\s*機台", txt)
+                room = room_match.group(1) if room_match else str(random.randint(1000, 9999))
                 
+                # --- B. 數據抓取 ---
                 n = int(re.search(r"未開\s*(\d+)", txt).group(1)) if re.search(r"未開\s*(\d+)", txt) else 0
                 r_match = re.search(r"(\d+\.\d+)\s*%", txt)
                 r = float(r_match.group(1)) if r_match else 0.0
-                b_match = re.search(r"下注\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)", txt)
-                b = float(b_match.group(1).replace(',', '')) if b_match else 0.0
+                
+                # --- C. 精準定位今日下注 (過濾長度異常的 30 天總額) ---
+                b = 0.0
+                bet_patterns = re.findall(r"(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)", txt)
+                for val in bet_patterns:
+                    clean_val = float(val.replace(',', ''))
+                    # 過濾掉 0 和 過大的近30天總和數據 (假設單日下注不超過 100 萬)
+                    if 0 < clean_val < 1000000:
+                        b = clean_val
+                        break
 
                 if r > 0:
                     return process_analysis(line_api, event, user_id, room, n, b, r, limit)
                 else:
-                    return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="❓ 辨識不到關鍵數據，請確保圖片清晰並包含 RTP。")]))
+                    return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="❓ 辨識不到關鍵數據，請確保圖片包含今日 RTP 及金額。")]))
             except Exception as e:
                 logger.error(f"Image Error: {e}")
 
 def process_analysis(line_api, event, user_id, room, n, b, r, limit):
     today = get_tz_now().strftime('%Y-%m-%d')
-    # 加入精確到秒的時間戳，確保資料庫 insert 永遠不會因為 UNIQUE 約束報錯
     now_ts = get_tz_now().strftime('%H%M%S')
     fp = f"{room}_{n}_{r}_{b}_{now_ts}"
     
     try:
         supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today, "data_hash": fp, "rtp_value": r}).execute()
     except Exception as e:
-        logger.warning(f"重複寫入攔截: {e}")
-        return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🚫 數據處理中，請稍後再試。")]))
+        # 如果因為資料庫 Constraint 報錯，直接 Pass 繼續跑分析
+        pass
 
     count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today).execute()
     new_cnt = count_res.count if count_res.count else 1
     
-    # 趨勢分析：找同房號的上一筆記錄
     trend_text = "📊 房間初次分析。"
     diff = 0
     prev = supabase.table("usage_logs").select("rtp_value").eq("line_user_id", user_id).like("data_hash", f"{room}%").order("created_at", desc=True).limit(2).execute()
