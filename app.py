@@ -56,14 +56,14 @@ def get_main_menu():
         QuickReplyItem(action=MessageAction(label="🔓 我要開通", text="我要開通"))
     ])
 
-# ---------- 核心解析邏輯 (精準強化版) ----------
+# ---------- 核心解析邏輯 (區域定位強化版) ----------
 def parse_seth_ocr(txt: str):
     room = "未知"
     n = 0
     b = 0.0
     r = 0.0
 
-    # 1. 房號：精準尋找
+    # 1. 房號辨識
     room_match = re.search(r"(\d{4})\s*機台", txt)
     if room_match:
         room = room_match.group(1)
@@ -76,41 +76,59 @@ def parse_seth_ocr(txt: str):
     if n_match:
         n = int(n_match.group(1))
 
-    # 3. 得分率 (RTP)：鎖定 10%~500% 之間且帶小數點的數字
-    rtp_list = re.findall(r"(\d{1,3}\.\d{2})\s*%", txt)
-    valid_rtps = [float(x) for x in rtp_list if 10.0 < float(x) < 500.0]
-    if valid_rtps:
-        r = valid_rtps[0] # 今日數據通常在 OCR 結果的前面
+    # 3. 數據區域切分 (精準定位今日數據)
+    try:
+        # 賽特 UI 特徵：今日數據夾在「今日」與「近30天」關鍵字之間
+        if "今日" in txt:
+            # 取得「今日」標籤後的內容，並在「近30天」處截斷
+            today_section = txt.split("今日")[1].split("近30天")[0]
+        else:
+            today_section = txt
 
-    # 4. 下注金額：排除法 + 範圍過濾
-    # 找出所有像金額的數字（含逗號）
-    all_nums = re.findall(r"(\d{1,3}(?:,\d{3})*(?:\.\d{0,2})?)", txt)
-    candidates = []
-    for val in all_nums:
-        clean_val = float(val.replace(',', ''))
-        
-        # 排除已知的房號、RTP 或轉數
-        if clean_val == r or clean_val == float(room if room.isdigit() else 0) or clean_val == float(n):
-            continue
-            
-        # 今日下注特徵：10~3,000,000 之間，且賽特通常是整數 (不帶點或點後為0)
-        if 10 < clean_val < 3000000:
-            if "." not in val or val.endswith(".00"):
-                candidates.append(clean_val)
+        # --- 在今日區域內找 RTP (%) ---
+        rtp_match = re.search(r"(\d{1,3}\.\d{2})\s*%", today_section)
+        if rtp_match:
+            r = float(rtp_match.group(1))
 
-    if candidates:
-        b = candidates[0] # 取第一個符合條件的合理金額
+        # --- 在今日區域內找下注額 ---
+        # 找尋所有格式正確的數字 (含逗號或小數點)
+        nums = re.findall(r"(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)", today_section)
+        for val in nums:
+            clean_val = float(val.replace(',', ''))
+            # 排除掉剛抓到的 RTP 數值、房號以及未開轉數
+            if clean_val != r and clean_val != float(room if room.isdigit() else 0) and clean_val != float(n):
+                # 今日下注通常大於 10 且小於 500 萬 (避開近30天的大數)
+                if 10 < clean_val < 5000000:
+                    b = clean_val
+                    break
+    except Exception as e:
+        logger.error(f"Section Parse Error: {e}")
+
+    # 備援邏輯：如果區域切分失敗導致沒抓到，改用全域抓取第一組符合合理範圍的數值
+    if r == 0:
+        rtps = re.findall(r"(\d{1,3}\.\d{2})\s*%", txt)
+        if rtps: r = float(rtps[0])
+    if b == 0:
+        bets = re.findall(r"(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)", txt)
+        for val in bets:
+            cv = float(val.replace(',', ''))
+            if cv != r and 10 < cv < 3000000:
+                b = cv
+                break
 
     return room, n, b, r
 
 # ---------- 卡片樣式 ----------
 def get_flex_card(room, n, r, b, trend):
-    color = "#4CAF50"
+    # 判斷顏色邏輯
+    color = "#4CAF50" # 綠色 (優)
     status = "✅ 數據優異"
     if n > 200 or r > 120: 
-        color = "#F44336"; status = "🚨 風險偏高"
+        color = "#F44336" # 紅色 (危)
+        status = "🚨 風險偏高"
     elif n > 100 or r > 110: 
-        color = "#FFC107"; status = "⚠️ 觀察進場"
+        color = "#FFC107" # 黃色 (警)
+        status = "⚠️ 觀察進場"
 
     return {
         "type": "bubble",
@@ -147,7 +165,7 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_api = MessagingApi(api_client)
 
-        # 權限
+        # 權限檢查
         is_approved = (user_id == ADMIN_LINE_ID)
         mem = supabase.table("members").select("*").eq("line_user_id", user_id).maybe_single().execute()
         if mem.data and mem.data.get("status") == "approved":
@@ -161,49 +179,52 @@ def handle_message(event):
                 if is_approved:
                     return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text="✅ 您已開通。")]))
                 supabase.table("members").upsert({"line_user_id": user_id, "status": "pending"}).execute()
-                return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text="📩 申請已送出。")]))
+                return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text="📩 申請已送出，請等待管理員核可。")]))
             
             if msg == "我的額度":
                 today = get_tz_now().strftime("%Y-%m-%d")
                 res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today).execute()
                 used = res.count if res.count else 0
-                return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text=f"📊 今日使用：{used}/{limit}", quick_reply=get_main_menu())]))
+                return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text=f"📊 今日使用額度：{used}/{limit}", quick_reply=get_main_menu())]))
 
         if event.message.type == "image":
             if not is_approved:
-                return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text="⚠️ 尚未開通。")]))
+                return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text="⚠️ 尚未開通使用權限，請點選選單申請。")]))
 
             try:
+                # 取得圖片內容
                 blob_api = MessagingApiBlob(api_client)
                 img_bytes = blob_api.get_message_content(event.message.id)
                 
+                # Google Vision OCR 辨識
                 res = vision_client.document_text_detection(image=vision.Image(content=img_bytes))
                 txt = res.full_text_annotation.text if res.full_text_annotation else ""
                 
+                # 解析數據
                 room, n, b, r = parse_seth_ocr(txt)
                 if r <= 0:
-                    return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text="❓ 辨識失敗，請確保包含底部資訊區。")]))
+                    return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text="❓ 無法讀取數據，請確保截圖包含完整的詳情面板。")]))
 
-                # 快速查詢趨勢
+                # 趨勢計算
                 trend = "📊 房間初次分析"
                 try:
                     prev = supabase.table("usage_logs").select("rtp_value").eq("line_user_id", user_id).like("data_hash", f"{room}%").order("created_at", desc=True).limit(1).execute()
                     if prev.data:
                         diff = r - float(prev.data[0]['rtp_value'])
-                        trend = f"📈 較上次：{'上升' if diff >= 0 else '下降'} {abs(diff):.2f}%"
+                        trend = f"📈 較上次分析：{'上升' if diff >= 0 else '下降'} {abs(diff):.2f}%"
                 except: pass
 
-                # 【核心優化】: 先回覆 LINE，確保不逾時
+                # 【立即回覆】避免 LINE 伺服器逾時
                 flex_content = get_flex_card(room, n, r, b, trend)
                 line_api.reply_message(ReplyMessageRequest(
                     reply_token=event.reply_token,
                     messages=[
-                        FlexMessage(alt_text="分析報告", contents=FlexContainer.from_dict(flex_content)),
-                        TextMessage(text="點擊下方選單查看更多", quick_reply=get_main_menu())
+                        FlexMessage(alt_text="機台分析報告", contents=FlexContainer.from_dict(flex_content)),
+                        TextMessage(text="您可以繼續上傳截圖或查看額度", quick_reply=get_main_menu())
                     ]
                 ))
 
-                # 回覆完後，再異步存入 Supabase
+                # 回覆完畢後再異步存入資料庫
                 today = get_tz_now().strftime("%Y-%m-%d")
                 supabase.table("usage_logs").insert({
                     "line_user_id": user_id,
