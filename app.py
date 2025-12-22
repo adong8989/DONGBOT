@@ -1,171 +1,218 @@
-import os, re, uuid, hashlib, base64, datetime
-from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.models import MessageEvent, ImageMessage, TextSendMessage
+import os
+import tempfile
+import logging
+import re
+import random
+from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv
+from flask import Flask, request
+
 from supabase import create_client
-import openai
-import cv2
-import numpy as np
-
-# ================= 基本設定 =================
-
-app = Flask(__name__)
-
-line_bot_api = LineBotApi(os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
-handler = WebhookHandler(os.getenv("LINE_CHANNEL_SECRET"))
-
-supabase = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_KEY")
+from linebot.v3 import WebhookHandler
+from linebot.v3.messaging import (
+    Configuration, ApiClient, MessagingApi, MessagingApiBlob,
+    TextMessage, ReplyMessageRequest, FlexMessage, FlexContainer,
+    PushMessageRequest
 )
+from linebot.v3.webhooks import MessageEvent
+from linebot.v3.messaging.models import QuickReply, QuickReplyItem, MessageAction
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# ---------- 基本設定 ----------
+load_dotenv()
+app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# ================= 使用次數 / 防重算 =================
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+ADMIN_LINE_ID = os.getenv("ADMIN_LINE_ID")
+GCP_SA_KEY_JSON = os.getenv("GCP_SA_KEY_JSON")
 
-def make_analysis_id(user_id, image_bytes):
-    return f"{user_id}:{hashlib.md5(image_bytes).hexdigest()}"
+configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(LINE_CHANNEL_SECRET)
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def used_today(user_id, analysis_id):
-    today = datetime.date.today().isoformat()
-    r = supabase.table("usage_logs") \
-        .select("id") \
-        .eq("user_id", user_id) \
-        .eq("date", today) \
-        .eq("analysis_id", analysis_id) \
-        .execute()
-    return len(r.data) > 0
+# ---------- Google Vision 初始化 ----------
+vision_client = None
+if GCP_SA_KEY_JSON:
+    try:
+        from google.cloud import vision
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            f.write(GCP_SA_KEY_JSON)
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
+        vision_client = vision.ImageAnnotatorClient()
+    except Exception as e:
+        logger.error(f"Vision Client Error: {e}")
 
-def log_usage(user_id, analysis_id):
-    supabase.table("usage_logs").insert({
-        "user_id": user_id,
-        "date": datetime.date.today().isoformat(),
-        "analysis_id": analysis_id
-    }).execute()
+# ---------- 工具函式 ----------
+def get_tz_now():
+    return datetime.now(timezone(timedelta(hours=8)))
 
-# ================= 裁切 OCR（自適應） =================
+def get_main_menu():
+    return QuickReply(items=[
+        QuickReplyItem(action=MessageAction(label="📊 我的額度", text="我的額度")),
+        QuickReplyItem(action=MessageAction(label="📘 使用說明", text="使用說明")),
+        QuickReplyItem(action=MessageAction(label="🔓 我要開通", text="我要開通"))
+    ])
 
-def smart_crop(image_bytes):
-    img = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
-    h, w, _ = img.shape
-
-    # 判斷直式 / 橫式
-    is_portrait = h >= w
-
-    # 下方比例（直式裁多一點）
-    crop_ratio = 0.45 if is_portrait else 0.4
-    y_start = int(h * (1 - crop_ratio))
-
-    cropped = img[y_start:h, 0:w]
-    _, buf = cv2.imencode(".png", cropped)
-    return buf.tobytes()
-
-# ================= OCR =================
-
-def vision_ocr(image_bytes):
-    b64 = base64.b64encode(image_bytes).decode()
-    res = openai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "請只輸出圖片中的文字"},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
-            ]
-        }]
-    )
-    return res.choices[0].message.content
-
-# ================= OCR 解析（下方資訊區） =================
-
-def parse_seth(txt):
-    block = ""
-    for k in ["時間", "總下注額", "得分率", "近30天"]:
-        if k in txt:
-            block = txt[txt.find(k):]
-            break
-    if not block:
-        block = txt
-
+# ---------- 核心解析邏輯 (修正版) ----------
+def parse_seth_ocr(txt: str):
     room = "未知"
-    m = re.search(r"(\d{3,5})\s*機台", block)
-    if m:
-        room = m.group(1)
+    n = 0
+    b = 0.0
+    r = 0.0
 
-    bet = 0
-    m = re.search(r"今日[^\d]{0,10}([\d,]+(?:\.\d+)?)", block)
-    if m:
-        bet = float(m.group(1).replace(",", ""))
+    # 1. 房號：找「機台」字樣左邊的 4 位數
+    room_match = re.search(r"(\d{4})\s*機台", txt)
+    if room_match:
+        room = room_match.group(1)
+    else:
+        # 備援：抓取畫面上所有四位數，通常詳情區的房號在文字流後段
+        rooms = re.findall(r"\b\d{4}\b", txt)
+        if rooms: room = rooms[-1]
 
-    rtp = 0
-    m = re.search(r"今日[\s\S]{0,40}?(\d{2,3}(?:\.\d+)?)\s*%", block)
-    if m:
-        rtp = float(m.group(1))
+    # 2. 未開轉數：精準抓取「未開」後面的數字
+    n_match = re.search(r"未\s*開\s*(\d+)", txt)
+    if n_match:
+        n = int(n_match.group(1))
 
-    spins = 0
-    m = re.search(r"未\s*開\s*(\d+)", block)
-    if m:
-        spins = int(m.group(1))
+    # 3. 得分率 (RTP)：過濾掉紅色的「近30天」
+    # 邏輯：findall 會按 OCR 順序排列，今日 RTP 通常在第一個或接近「得分率」標籤
+    rtp_list = re.findall(r"(\d{1,3}\.\d{2})\s*%", txt)
+    if rtp_list:
+        r = float(rtp_list[0])
 
-    return room, spins, bet, rtp
+    # 4. 下注金額：排除法
+    # 找所有含千分位的數字，排除掉 RTP、房號、以及大於 500 萬的數據(近30天)
+    bet_patterns = re.findall(r"(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)", txt)
+    valid_bets = []
+    for val in bet_patterns:
+        clean_val = float(val.replace(',', ''))
+        # 判斷標準：不是 RTP、不是房號、金額在合理單日範圍內
+        if clean_val != r and clean_val != float(room if room.isdigit() else 0):
+            if 10 < clean_val < 5000000:
+                valid_bets.append(clean_val)
+    
+    if valid_bets:
+        b = valid_bets[0]
 
-# ================= LINE Webhook =================
+    return room, n, b, r
 
+# ---------- 回覆卡片樣式 ----------
+def get_flex_card(room, n, r, b, trend):
+    # 根據數據決定顏色
+    color = "#4CAF50"
+    status = "✅ 數據優異"
+    if n > 200 or r > 120: 
+        color = "#F44336"; status = "🚨 風險偏高"
+    elif n > 100 or r > 110: 
+        color = "#FFC107"; status = "⚠️ 觀察進場"
+
+    return {
+        "type": "bubble",
+        "header": {"type": "box", "layout": "vertical", "contents": [{"type": "text", "text": f"機台分析: {room}", "weight": "bold", "color": "#FFFFFF"}], "backgroundColor": color},
+        "body": {"type": "box", "layout": "vertical", "contents": [
+            {"type": "text", "text": status, "weight": "bold", "size": "xl", "color": color},
+            {"type": "separator", "margin": "md"},
+            {"type": "box", "layout": "vertical", "margin": "md", "spacing": "sm", "contents": [
+                {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "📍 未開轉數"}, {"type": "text", "text": f"{n} 轉", "align": "end", "weight": "bold"}]},
+                {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "📈 今日 RTP"}, {"type": "text", "text": f"{r}%", "align": "end", "weight": "bold"}]},
+                {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "💰 今日下注"}, {"type": "text", "text": f"{int(b):,} 元", "align": "end", "weight": "bold"}]}
+            ]},
+            {"type": "box", "layout": "vertical", "margin": "md", "backgroundColor": "#F0F0F0", "paddingAll": "sm", "contents": [
+                {"type": "text", "text": trend, "size": "xs", "color": "#666666"}
+            ]}
+        ]}
+    }
+
+# ---------- LINE Callback 路由 ----------
 @app.route("/callback", methods=["POST"])
 def callback():
-    handler.handle(
-        request.get_data(as_text=True),
-        request.headers["X-Line-Signature"]
-    )
-    return "OK"
+    signature = request.headers.get("X-Line-Signature", "")
+    body = request.get_data(as_text=True)
+    try:
+        handler.handle(body, signature)
+    except Exception as e:
+        logger.error(f"Callback Error: {e}")
+    return "OK", 200
 
-# ================= 圖片分析主流程 =================
-
-@handler.add(MessageEvent, message=ImageMessage)
-def handle_image(event):
+# ---------- 訊息事件處理 ----------
+@handler.add(MessageEvent)
+def handle_message(event):
     user_id = event.source.user_id
-    content = line_bot_api.get_message_content(event.message.id)
-    img_bytes = content.content
+    with ApiClient(configuration) as api_client:
+        line_api = MessagingApi(api_client)
 
-    analysis_id = make_analysis_id(user_id, img_bytes)
+        # 1. 權限檢查
+        is_approved = (user_id == ADMIN_LINE_ID)
+        mem = supabase.table("members").select("*").eq("line_user_id", user_id).maybe_single().execute()
+        if mem.data and mem.data.get("status") == "approved":
+            is_approved = True
+        
+        limit = 50 if is_approved else 15
 
-    if used_today(user_id, analysis_id):
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="⚠️ 此圖片已分析過，不重複扣次")
-        )
-        return
+        # 2. 文字訊息處理
+        if event.message.type == "text":
+            msg = event.message.text.strip()
+            if msg == "我要開通":
+                if is_approved:
+                    return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text="✅ 您已開通權限。")]))
+                supabase.table("members").upsert({"line_user_id": user_id, "status": "pending"}).execute()
+                return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text="📩 申請已送出，請靜候核准。")]))
+            
+            if msg == "我的額度":
+                today = get_tz_now().strftime("%Y-%m-%d")
+                res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today).execute()
+                return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text=f"📊 今日使用：{res.count or 0}/{limit}", quick_reply=get_main_menu())]))
 
-    # ① 先裁切 OCR
-    cropped = smart_crop(img_bytes)
-    txt = vision_ocr(cropped)
+        # 3. 圖片訊息處理 (分析核心)
+        if event.message.type == "image":
+            if not is_approved:
+                return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text="⚠️ 尚未開通，請先點選『我要開通』。")]))
 
-    room, spins, bet, rtp = parse_seth(txt)
+            # 取得圖片
+            blob_api = MessagingApiBlob(api_client)
+            img_bytes = blob_api.get_message_content(event.message.id)
+            
+            # OCR 辨識
+            res = vision_client.document_text_detection(image=vision.Image(content=img_bytes))
+            txt = res.full_text_annotation.text if res.full_text_annotation else ""
+            
+            # 解析數據
+            room, n, b, r = parse_seth_ocr(txt)
 
-    # ② 若裁切失敗 → fallback 整張
-    if rtp == 0:
-        txt = vision_ocr(img_bytes)
-        room, spins, bet, rtp = parse_seth(txt)
+            if r <= 0:
+                return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text="❓ 無法辨識機台數據，請確保截圖完整且清晰。")]))
 
-    log_usage(user_id, analysis_id)
+            # 寫入紀錄與趨勢分析
+            today = get_tz_now().strftime("%Y-%m-%d")
+            trend = "📊 房間初次分析"
+            try:
+                # 取得上一筆紀錄
+                prev = supabase.table("usage_logs").select("rtp_value").eq("line_user_id", user_id).like("data_hash", f"{room}%").order("created_at", desc=True).limit(1).execute()
+                if prev.data:
+                    diff = r - float(prev.data[0]['rtp_value'])
+                    trend = f"📈 較上次：{'上升' if diff >= 0 else '下降'} {abs(diff):.2f}%"
+                
+                # 插入新紀錄 (加上 timestamp 防止 data_hash 衝突)
+                supabase.table("usage_logs").insert({
+                    "line_user_id": user_id,
+                    "used_at": today,
+                    "rtp_value": r,
+                    "data_hash": f"{room}_{r}_{b}_{get_tz_now().timestamp()}"
+                }).execute()
+            except Exception as e:
+                logger.error(f"Database Error: {e}")
 
-    risk = "低風險 / 數據優異" if rtp >= 100 else "注意風險"
-
-    reply = f"""🎰 賽特分析
-房號：{room}
-
-未開轉數：{spins}
-今日下注：{int(bet):,}
-今日 RTP：{rtp:.2f}%
-
-判定：{risk}"""
-
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=reply)
-    )
-
-# ================= 啟動 =================
+            # 發送 Flex Card
+            flex_content = get_flex_card(room, n, r, b, trend)
+            return line_api.reply_message(ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[FlexMessage(alt_text="機台分析報告", contents=FlexContainer.from_dict(flex_content))]
+            ))
 
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
