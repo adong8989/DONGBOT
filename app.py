@@ -49,6 +49,42 @@ if GCP_SA_KEY_JSON:
     except Exception as e:
         logger.error(f"❌ Vision 初始化失敗: {e}")
 
+# ---------- 解析邏輯強化 ----------
+def parse_seth_ocr(txt: str):
+    room = "0000"
+    n = 0
+    b = 0.0
+    r = 0.0
+
+    # 1. 房號
+    room_match = re.search(r"(\d{4})\s*機台", txt)
+    if room_match: room = room_match.group(1)
+    
+    # 2. 未開轉數
+    n_match = re.search(r"未\s*開\s*(\d+)", txt)
+    if n_match: n = int(n_match.group(1))
+
+    # 3. 數據區域定位 (今日 vs 近30天)
+    # 針對賽特截圖：今日數據通常在「今日」標籤後
+    sections = re.split(r"今日|近30天", txt)
+    target_text = sections[1] if len(sections) > 1 else txt
+
+    # 找 RTP (%) - 只要是 0.00% ~ 999.99% 都抓
+    rtps = re.findall(r"(\d{1,3}\.\d{2})\s*%", target_text)
+    if rtps:
+        r = float(rtps[0])
+
+    # 找下注額 - 排除掉 RTP 數字後的剩餘大數字
+    nums = re.findall(r"(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)", target_text)
+    for val in nums:
+        clean_val = float(val.replace(',', ''))
+        if clean_val != r and clean_val != float(room if room.isdigit() else 0):
+            if clean_val > 10: # 過濾掉零星雜訊
+                b = clean_val
+                break
+
+    return room, n, b, r
+
 def get_tz_now():
     return datetime.now(timezone(timedelta(hours=8)))
 
@@ -59,7 +95,7 @@ def get_main_menu():
         QuickReplyItem(action=MessageAction(label="🔓 我要開通", text="我要開通"))
     ])
 
-def get_flex_card(n, r, b, trend_text, trend_diff):
+def get_flex_card(room, n, r, b, trend_text):
     main_color = "#4CAF50"
     main_label = "✅ 低風險 / 數據優異"
     if n > 250 or r > 120:
@@ -72,7 +108,7 @@ def get_flex_card(n, r, b, trend_text, trend_diff):
     
     return {
       "type": "bubble", "size": "giga",
-      "header": {"type": "box", "layout": "vertical", "contents": [{"type": "text", "text": "賽特選房智能分析", "weight": "bold", "color": "#FFFFFF", "size": "lg", "align": "center"}], "backgroundColor": main_color, "paddingAll": "15px"},
+      "header": {"type": "box", "layout": "vertical", "contents": [{"type": "text", "text": f"機台分析: {room}", "weight": "bold", "color": "#FFFFFF", "size": "lg", "align": "center"}], "backgroundColor": main_color, "paddingAll": "15px"},
       "body": {"type": "box", "layout": "vertical", "contents": [
           {"type": "text", "text": main_label, "weight": "bold", "size": "xl", "color": main_color},
           {"type": "separator", "margin": "lg"},
@@ -108,94 +144,61 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_api = MessagingApi(api_client)
 
-        # 1. 檢查會員狀態與自動開通管理員
+        # 權限檢查
         is_approved = (user_id == ADMIN_LINE_ID)
         try:
             m_res = supabase.table("members").select("*").eq("line_user_id", user_id).maybe_single().execute()
-            if user_id == ADMIN_LINE_ID:
-                supabase.table("members").upsert({"line_user_id": user_id, "status": "approved"}, on_conflict="line_user_id").execute()
-                is_approved = True
-            elif m_res.data and m_res.data.get("status") == "approved":
+            if m_res.data and m_res.data.get("status") == "approved":
                 is_approved = True
         except: pass
 
-        limit = 50 if (is_approved and user_id == ADMIN_LINE_ID) else 15
-
-        # 2. 文字訊息
         if event.message.type == "text":
             msg = event.message.text.strip()
-            
             if msg == "我要開通":
-                if is_approved:
-                    return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 您已開通權限，直接傳送圖片即可分析！")]))
-                
-                # 發送申請前再次檢查資料庫
                 supabase.table("members").upsert({"line_user_id": user_id, "status": "pending"}, on_conflict="line_user_id").execute()
-                line_api.push_message(PushMessageRequest(to=ADMIN_LINE_ID, messages=[TextMessage(text=f"🔔 新申請！\nID: {user_id}\n核准 {user_id}")]))
-                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 申請已送出！請等待審核。")]))
-
-            if user_id == ADMIN_LINE_ID and msg.startswith("核准 "):
-                target_uid = msg.split(" ")[1]
-                supabase.table("members").update({"status": "approved", "approved_at": get_tz_now().isoformat()}).eq("line_user_id", target_uid).execute()
-                line_api.push_message(PushMessageRequest(to=target_uid, messages=[TextMessage(text="🎉 帳號已核准開通！", quick_reply=get_main_menu())]))
-                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"✅ 已核准：{target_uid}")]))
-
+                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 申請已送出！")]))
+            
             if msg == "我的額度":
                 today = get_tz_now().strftime('%Y-%m-%d')
                 count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today).execute()
                 cnt = count_res.count if count_res.count else 0
-                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"📊 今日分析：{cnt} / {limit}")]))
+                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"📊 今日分析：{cnt}", quick_reply=get_main_menu())]))
 
-        # 3. 圖片分析
         elif event.message.type == "image":
             if not is_approved:
-                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 請先申請開通。")]))
+                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 尚未開通。")]))
 
+            # --- 立即擷取內容與 OCR ---
+            blob_api = MessagingApiBlob(api_client)
+            img_bytes = blob_api.get_message_content(event.message.id)
+            res = vision_client.document_text_detection(image=vision.Image(content=img_bytes))
+            txt = res.full_text_annotation.text if res.full_text_annotation else ""
+            
+            room, n, b, r = parse_seth_ocr(txt)
+
+            if r <= 0:
+                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="❓ 辨識失敗，請確保圖片清晰。")]))
+
+            # --- 重複檢查與儲存 ---
+            today = get_tz_now().strftime('%Y-%m-%d')
+            fp = f"{room}_{n}_{b}_{r}"
             try:
-                blob_api = MessagingApiBlob(api_client)
-                img_bytes = blob_api.get_message_content(event.message.id)
-                res = vision_client.document_text_detection(image=vision.Image(content=img_bytes))
-                txt = res.full_text_annotation.text if res.full_text_annotation else ""
-                
-                n = int(re.search(r"未開\s*(\d+)", txt).group(1)) if re.search(r"未開\s*(\d+)", txt) else 0
-                r_match = re.search(r"(\d+\.\d+)\s*%", txt)
-                r = float(r_match.group(1)) if r_match else 0.0
-                b_match = re.search(r"下注\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)", txt)
-                b = float(b_match.group(1).replace(',', '')) if b_match else 0.0
+                supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today, "data_hash": fp, "rtp_value": r}).execute()
+            except:
+                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🚫 此截圖已分析過。")]))
 
-                if r > 0:
-                    return process_analysis(line_api, event, user_id, "0000", n, b, r, limit)
-                else:
-                    return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="❓ 辨識失敗，請確保圖片包含『未開轉數』與『今日RTP』。")]))
-            except Exception as e:
-                logger.error(f"OCR Error: {e}")
+            # --- 趨勢計算 ---
+            trend_text = "📊 房間初次分析。"
+            prev = supabase.table("usage_logs").select("rtp_value").eq("line_user_id", user_id).like("data_hash", f"{room}%").neq("data_hash", fp).order("created_at", desc=True).limit(1).execute()
+            if prev.data:
+                diff = r - float(prev.data[0]['rtp_value'])
+                trend_text = f"📈 較上次：{'上升' if diff >= 0 else '下降'} {abs(diff):.2f}%"
 
-def process_analysis(line_api, event, user_id, room, n, b, r, limit):
-    today = get_tz_now().strftime('%Y-%m-%d')
-    fp = f"{room}_{n}_{b}"
-    
-    try:
-        supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today, "data_hash": fp, "rtp_value": r}).execute()
-    except Exception as e:
-        # 關鍵修正：若重複，則主動告知
-        logger.warning(f"Duplicate data detected: {fp}")
-        return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🚫 偵測到重複截圖！\n這張圖片的數據已經分析過了，請更換房間後再行截圖分析。")]))
-
-    count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today).execute()
-    new_cnt = count_res.count if count_res.count else 1
-    
-    trend_text = "📊 房間初次分析。"
-    diff = 0
-    prev = supabase.table("usage_logs").select("rtp_value").eq("line_user_id", user_id).like("data_hash", f"{room}%").neq("data_hash", fp).order("created_at", desc=True).limit(1).execute()
-    if prev.data:
-        diff = r - float(prev.data[0]['rtp_value'])
-        trend_text = f"📈 趨勢：{'上升' if diff > 0 else '下降'} {abs(diff):.1f}%"
-
-    flex_content = get_flex_card(n, r, b, trend_text, diff)
-    return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[
-        FlexMessage(alt_text="分析報告", contents=FlexContainer.from_dict(flex_content)),
-        TextMessage(text=f"📊 今日分析：{new_cnt} / {limit}", quick_reply=get_main_menu())
-    ]))
+            # --- 正式回覆 ---
+            flex_content = get_flex_card(room, n, r, b, trend_text)
+            return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[
+                FlexMessage(alt_text="分析報告", contents=FlexContainer.from_dict(flex_content))
+            ]))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
