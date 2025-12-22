@@ -95,12 +95,14 @@ def async_image_analysis(user_id, message_id, limit):
             txt = res.full_text_annotation.text if res.full_text_annotation else ""
             lines = [l.strip() for l in txt.split('\n') if l.strip()]
 
+            # 1. 房號抓取
             room = "未知"
             for line in reversed(lines):
                 if re.fullmatch(r"\d{3,4}", line):
                     room = line
                     break
 
+            # 2. 數據提取
             r, b = 0.0, 0.0
             for i, line in enumerate(lines):
                 if "今日" in line:
@@ -120,10 +122,11 @@ def async_image_analysis(user_id, message_id, limit):
             if n_m: n = int(n_m.group(1))
 
             if r <= 0 or room == "未知":
-                line_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="❓ 辨識失敗，請確保截圖包含完整的底部數據。")]))
+                line_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="❓ 辨識失敗，請確保截圖清晰。")]))
                 return
 
-            trend_text = "🆕 本日首分析"
+            # --- 趨勢查詢 ---
+            trend_text = "🆕 今日首分析"
             trend_color = "#AAAAAA"
             try:
                 last_record = supabase.table("usage_logs") \
@@ -132,49 +135,35 @@ def async_image_analysis(user_id, message_id, limit):
                     .order("created_at", descending=True) \
                     .limit(1) \
                     .execute()
-                
                 if last_record.data:
                     last_rtp = float(last_record.data[0]['rtp_value'])
                     diff = r - last_rtp
-                    if diff > 0.01:
-                        trend_text = f"🔥 趨勢升溫中 (+{diff:.2f}%)"
-                        trend_color = "#D50000"
-                    elif diff < -0.01:
-                        trend_text = f"❄️ 數據冷卻中 ({diff:.2f}%)"
-                        trend_color = "#1976D2"
-                    else:
-                        trend_text = "➡️ 數據穩定平穩"
-                        trend_color = "#555555"
-            except Exception as e:
-                logger.error(f"Trend query error: {e}")
+                    if diff > 0.01: trend_text = f"🔥 趨勢升溫 (+{diff:.2f}%)"; trend_color = "#D50000"
+                    elif diff < -0.01: trend_text = f"❄️ 數據冷卻 ({diff:.2f}%)"; trend_color = "#1976D2"
+                    else: trend_text = "➡️ 數據平穩"; trend_color = "#555555"
+            except: pass
 
+            # --- 存檔區 (放寬限制版) ---
             today_str = get_tz_now().strftime('%Y-%m-%d')
-            
-            # --- 重點修正：加入 message_id 確保每張截圖都是唯一的 ---
-            data_hash = f"{room}_{n}_{b}_{message_id}" 
-            
             try:
                 supabase.table("usage_logs").insert({
                     "line_user_id": user_id, 
                     "used_at": today_str, 
-                    "data_hash": data_hash, 
                     "rtp_value": r,
-                    "room_id": room 
+                    "room_id": room,
+                    "data_hash": f"IMG_{message_id}_{random.randint(100,999)}" 
                 }).execute()
             except Exception as e:
-                # 檢查是否為資料庫唯一索引衝突
-                logger.error(f"Insert Error: {e}")
-                line_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="🚫 截圖重複或存檔失敗。")]))
-                return
+                logger.error(f"Save DB Error: {e}")
+                # 即使存檔失敗，也要把結果吐給使用者，不要擋掉
+                pass
 
             count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
-            
             line_api.push_message(PushMessageRequest(to=user_id, messages=[
-                FlexMessage(alt_text="機台趨勢分析報告", contents=FlexContainer.from_dict(get_flex_card(room, n, r, b, trend_text, trend_color))),
+                FlexMessage(alt_text="機台分析報告", contents=FlexContainer.from_dict(get_flex_card(room, n, r, b, trend_text, trend_color))),
                 TextMessage(text=f"📊 今日剩餘額度：{limit - (count_res.count or 0)} / {limit}", quick_reply=get_main_menu())
             ]))
-
-        except Exception as e: logger.error(f"OCR/Async Error: {e}")
+        except Exception as e: logger.error(f"Main logic error: {e}")
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -189,7 +178,6 @@ def handle_message(event):
     user_id = event.source.user_id
     with ApiClient(configuration) as api_client:
         line_api = MessagingApi(api_client)
-        
         is_approved = (user_id == ADMIN_LINE_ID)
         limit = 15
         try:
@@ -203,19 +191,14 @@ def handle_message(event):
             msg = event.message.text.strip()
             if msg == "我要開通":
                 supabase.table("members").upsert({"line_user_id": user_id, "status": "pending"}, on_conflict="line_user_id").execute()
-                if ADMIN_LINE_ID: line_api.push_message(PushMessageRequest(to=ADMIN_LINE_ID, messages=[TextMessage(text=f"🔔 申請開通：{user_id}")]))
-                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 申請已送出。")]))
-            elif msg == "我的額度":
-                today_str = get_tz_now().strftime('%Y-%m-%d')
-                count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
-                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"📊 今日分析：{count_res.count or 0} / {limit}", quick_reply=get_main_menu())]))
+                if ADMIN_LINE_ID: line_api.push_message(PushMessageRequest(to=ADMIN_LINE_ID, messages=[TextMessage(text=f"🔔 申請通知：{user_id}")]))
+                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 申請中。")]))
             else:
-                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🔮 賽特智能分析：請傳送機台詳情截圖。", quick_reply=get_main_menu())]))
-
+                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🔮 請傳送詳情截圖。", quick_reply=get_main_menu())]))
         elif event.message.type == "image":
             if not is_approved:
-                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 帳號未核准，請先申請開通。")]))
-            line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🔍 正在比對趨勢並儲存數據...")] ))
+                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 請先申請開通。")]))
+            line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🔍 分析中...")] ))
             threading.Thread(target=async_image_analysis, args=(user_id, event.message.id, limit)).start()
 
 if __name__ == "__main__":
