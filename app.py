@@ -58,40 +58,32 @@ def get_main_menu():
         QuickReplyItem(action=MessageAction(label="🔓 我要開通", text="我要開通"))
     ])
 
-# ---------- 核心解析邏輯 (修正版) ----------
+# ---------- 核心解析邏輯 ----------
 def parse_seth_ocr(txt: str):
     room = "未知"
     n = 0
     b = 0.0
     r = 0.0
 
-    # 1. 房號：找「機台」字樣左邊的 4 位數
     room_match = re.search(r"(\d{4})\s*機台", txt)
     if room_match:
         room = room_match.group(1)
     else:
-        # 備援：抓取畫面上所有四位數，通常詳情區的房號在文字流後段
         rooms = re.findall(r"\b\d{4}\b", txt)
         if rooms: room = rooms[-1]
 
-    # 2. 未開轉數：精準抓取「未開」後面的數字
     n_match = re.search(r"未\s*開\s*(\d+)", txt)
     if n_match:
         n = int(n_match.group(1))
 
-    # 3. 得分率 (RTP)：過濾掉紅色的「近30天」
-    # 邏輯：findall 會按 OCR 順序排列，今日 RTP 通常在第一個或接近「得分率」標籤
     rtp_list = re.findall(r"(\d{1,3}\.\d{2})\s*%", txt)
     if rtp_list:
         r = float(rtp_list[0])
 
-    # 4. 下注金額：排除法
-    # 找所有含千分位的數字，排除掉 RTP、房號、以及大於 500 萬的數據(近30天)
     bet_patterns = re.findall(r"(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)", txt)
     valid_bets = []
     for val in bet_patterns:
         clean_val = float(val.replace(',', ''))
-        # 判斷標準：不是 RTP、不是房號、金額在合理單日範圍內
         if clean_val != r and clean_val != float(room if room.isdigit() else 0):
             if 10 < clean_val < 5000000:
                 valid_bets.append(clean_val)
@@ -103,7 +95,6 @@ def parse_seth_ocr(txt: str):
 
 # ---------- 回覆卡片樣式 ----------
 def get_flex_card(room, n, r, b, trend):
-    # 根據數據決定顏色
     color = "#4CAF50"
     status = "✅ 數據優異"
     if n > 200 or r > 120: 
@@ -128,7 +119,7 @@ def get_flex_card(room, n, r, b, trend):
         ]}
     }
 
-# ---------- LINE Callback 路由 ----------
+# ---------- LINE Callback ----------
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
@@ -154,7 +145,7 @@ def handle_message(event):
         
         limit = 50 if is_approved else 15
 
-        # 2. 文字訊息處理
+        # 2. 文字訊息
         if event.message.type == "text":
             msg = event.message.text.strip()
             if msg == "我要開通":
@@ -166,53 +157,57 @@ def handle_message(event):
             if msg == "我的額度":
                 today = get_tz_now().strftime("%Y-%m-%d")
                 res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today).execute()
-                return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text=f"📊 今日使用：{res.count or 0}/{limit}", quick_reply=get_main_menu())]))
+                used = res.count if res.count else 0
+                return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text=f"📊 今日使用：{used}/{limit}", quick_reply=get_main_menu())]))
 
-        # 3. 圖片訊息處理 (分析核心)
+        # 3. 圖片訊息 (解析核心 + 效能優化順序)
         if event.message.type == "image":
             if not is_approved:
                 return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text="⚠️ 尚未開通，請先點選『我要開通』。")]))
 
-            # 取得圖片
-            blob_api = MessagingApiBlob(api_client)
-            img_bytes = blob_api.get_message_content(event.message.id)
-            
-            # OCR 辨識
-            res = vision_client.document_text_detection(image=vision.Image(content=img_bytes))
-            txt = res.full_text_annotation.text if res.full_text_annotation else ""
-            
-            # 解析數據
-            room, n, b, r = parse_seth_ocr(txt)
-
-            if r <= 0:
-                return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text="❓ 無法辨識機台數據，請確保截圖完整且清晰。")]))
-
-            # 寫入紀錄與趨勢分析
-            today = get_tz_now().strftime("%Y-%m-%d")
-            trend = "📊 房間初次分析"
             try:
-                # 取得上一筆紀錄
-                prev = supabase.table("usage_logs").select("rtp_value").eq("line_user_id", user_id).like("data_hash", f"{room}%").order("created_at", desc=True).limit(1).execute()
-                if prev.data:
-                    diff = r - float(prev.data[0]['rtp_value'])
-                    trend = f"📈 較上次：{'上升' if diff >= 0 else '下降'} {abs(diff):.2f}%"
+                # 取得圖片內容
+                blob_api = MessagingApiBlob(api_client)
+                img_bytes = blob_api.get_message_content(event.message.id)
                 
-                # 插入新紀錄 (加上 timestamp 防止 data_hash 衝突)
+                # OCR 辨識
+                res = vision_client.document_text_detection(image=vision.Image(content=img_bytes))
+                txt = res.full_text_annotation.text if res.full_text_annotation else ""
+                
+                room, n, b, r = parse_seth_ocr(txt)
+                if r <= 0:
+                    return line_api.reply_message(ReplyMessageRequest(event.reply_token, [TextMessage(text="❓ 無法辨識機台數據，請確保截圖完整。")]))
+
+                # --- 趨勢分析 (放在回覆前，但僅執行一次快速 Query) ---
+                trend = "📊 房間初次分析"
+                try:
+                    prev = supabase.table("usage_logs").select("rtp_value").eq("line_user_id", user_id).like("data_hash", f"{room}%").order("created_at", desc=True).limit(1).execute()
+                    if prev.data:
+                        diff = r - float(prev.data[0]['rtp_value'])
+                        trend = f"📈 較上次：{'上升' if diff >= 0 else '下降'} {abs(diff):.2f}%"
+                except: pass
+
+                # --- 關鍵：先執行 LINE 回覆，避免 Reply Token 過期 ---
+                flex_content = get_flex_card(room, n, r, b, trend)
+                line_api.reply_message(ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[
+                        FlexMessage(alt_text="機台分析報告", contents=FlexContainer.from_dict(flex_content)),
+                        TextMessage(text="點擊下方選單查看更多功能", quick_reply=get_main_menu())
+                    ]
+                ))
+
+                # --- 回覆完後，再寫入資料庫 ---
+                today = get_tz_now().strftime("%Y-%m-%d")
                 supabase.table("usage_logs").insert({
                     "line_user_id": user_id,
                     "used_at": today,
                     "rtp_value": r,
                     "data_hash": f"{room}_{r}_{b}_{get_tz_now().timestamp()}"
                 }).execute()
-            except Exception as e:
-                logger.error(f"Database Error: {e}")
 
-            # 發送 Flex Card
-            flex_content = get_flex_card(room, n, r, b, trend)
-            return line_api.reply_message(ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[FlexMessage(alt_text="機台分析報告", contents=FlexContainer.from_dict(flex_content))]
-            ))
+            except Exception as e:
+                logger.error(f"Image Process Error: {e}")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
