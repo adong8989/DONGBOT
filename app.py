@@ -74,7 +74,7 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     
     return {
         "type": "bubble",
-        "header": {"type": "box", "layout": "vertical", "contents": [{"type": "text", "text": f"機台 {room} 智能趨勢報告", "color": "#FFFFFF", "weight": "bold"}], "backgroundColor": base_color},
+        "header": {"type": "box", "layout": "vertical", "contents": [{"type": "text", "text": f"賽特機台 {room} 房 AI趨勢分析", "color": "#FFFFFF", "weight": "bold"}], "backgroundColor": base_color},
         "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
             {"type": "text", "text": label, "size": "xl", "weight": "bold", "color": base_color},
             {"type": "text", "text": trend_text, "size": "sm", "color": trend_color, "weight": "bold"},
@@ -85,10 +85,10 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
                 {"type": "text", "text": f"💰 今日總下注：{b:,.2f}", "size": "md", "weight": "bold"}
             ]},
             {"type": "box", "layout": "vertical", "margin": "md", "backgroundColor": "#F8F8F8", "paddingAll": "10px", "contents": [
-                {"type": "text", "text": "🔮 智能推薦進場訊號", "weight": "bold", "size": "xs", "color": "#555555"},
+                {"type": "text", "text": "🔮 AI推薦進場訊號", "weight": "bold", "size": "xs", "color": "#555555"},
                 {
                     "type": "text", 
-                    "text": f"出現「{combo}」後考慮進場。系統提示：此訊號由數據模型生成，僅供參考。", 
+                    "text": f"出現「{combo}」後考慮進場。系統提示：此訊號由數據庫生成，提供參考。", 
                     "size": "sm", 
                     "margin": "xs", 
                     "weight": "bold", 
