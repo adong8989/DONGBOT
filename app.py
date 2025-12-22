@@ -58,9 +58,7 @@ def get_main_menu():
     ])
 
 def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
-    # 使用 data_hash 設定隨機種子，確保相同數據的推薦內容恆定
     random.seed(seed_hash)
-    
     base_color = "#00C853" 
     label = "✅ 低風險 / 數據優異"
     if n > 250 or r > 120: base_color = "#D50000"; label = "🚨 高風險 / 建議換房"
@@ -68,13 +66,15 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     
     s_pool = [("聖甲蟲", 3), ("紅寶石", 7), ("藍寶石", 7), ("眼睛", 5)]
     combo = "、".join([f"{s[0]}{random.randint(1,s[1])}顆" for s in random.sample(s_pool, 2)])
-    
-    # 抽完後重置隨機種子，避免影響系統其他隨機邏輯
     random.seed(None)
     
     return {
         "type": "bubble",
-        "header": {"type": "box", "layout": "vertical", "contents": [{"type": "text", "text": f"賽特機台 {room} 房 AI趨勢分析", "color": "#FFFFFF", "weight": "bold"}], "backgroundColor": base_color},
+        "header": {
+            "type": "box", "layout": "vertical", 
+            "contents": [{"type": "text", "text": f"賽特 {room} 房 AI趨勢分析", "color": "#FFFFFF", "weight": "bold", "size": "md"}], 
+            "backgroundColor": base_color
+        },
         "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
             {"type": "text", "text": label, "size": "xl", "weight": "bold", "color": base_color},
             {"type": "text", "text": trend_text, "size": "sm", "color": trend_color, "weight": "bold"},
@@ -85,16 +85,8 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
                 {"type": "text", "text": f"💰 今日總下注：{b:,.2f}", "size": "md", "weight": "bold"}
             ]},
             {"type": "box", "layout": "vertical", "margin": "md", "backgroundColor": "#F8F8F8", "paddingAll": "10px", "contents": [
-                {"type": "text", "text": "🔮 AI推薦進場訊號", "weight": "bold", "size": "xs", "color": "#555555"},
-                {
-                    "type": "text", 
-                    "text": f"出現「{combo}」後考慮進場。系統提示：此訊號由數據庫生成，提供參考。", 
-                    "size": "sm", 
-                    "margin": "xs", 
-                    "weight": "bold", 
-                    "color": "#111111",
-                    "wrap": True
-                }
+                {"type": "text", "text": "🔮 智能推薦進場訊號", "weight": "bold", "size": "xs", "color": "#555555"},
+                {"type": "text", "text": f"出現「{combo}」後考慮進場。系統提示：此訊號由數據模型生成，僅供參考。", "size": "sm", "margin": "xs", "weight": "bold", "color": "#111111", "wrap": True}
             ]}
         ]}
     }
@@ -109,14 +101,12 @@ def async_image_analysis(user_id, message_id, limit):
             txt = res.full_text_annotation.text if res.full_text_annotation else ""
             lines = [l.strip() for l in txt.split('\n') if l.strip()]
 
-            # 1. 抓取房號
             room = "未知"
             for line in reversed(lines):
                 if re.fullmatch(r"\d{3,4}", line):
                     room = line
                     break
 
-            # 2. 數據定位
             r, b = 0.0, 0.0
             for i, line in enumerate(lines):
                 if "今日" in line or "今" in line:
@@ -136,51 +126,36 @@ def async_image_analysis(user_id, message_id, limit):
             if n_m: n = int(n_m.group(1))
 
             if r <= 0:
-                line_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="❓ 辨識數據不全，請確保截圖清晰呈現「今日」區塊。")]))
+                line_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="❓ 辨識失敗，請確保數據區清晰。")]))
                 return
 
-            # --- 趨勢分析 ---
-            trend_text = "🆕 今日首分析"
-            trend_color = "#AAAAAA"
+            trend_text, trend_color = "🆕 今日首分析", "#AAAAAA"
             try:
                 last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", descending=True).limit(1).execute()
                 if last_record.data:
                     last_rtp = float(last_record.data[0]['rtp_value'])
                     diff = r - last_rtp
-                    if diff > 0.01: trend_text = f"🔥 趨勢升溫 (+{diff:.2f}%)"; trend_color = "#D50000"
-                    elif diff < -0.01: trend_text = f"❄️ 數據冷卻 ({diff:.2f}%)"; trend_color = "#1976D2"
-                    else: trend_text = "➡️ 數據平穩"; trend_color = "#555555"
+                    if diff > 0.01: trend_text, trend_color = f"🔥 趨勢升溫 (+{diff:.2f}%)", "#D50000"
+                    elif diff < -0.01: trend_text, trend_color = f"❄️ 數據冷卻 ({diff:.2f}%)", "#1976D2"
+                    else: trend_text, trend_color = "➡️ 數據平穩", "#555555"
             except: pass
 
-            # --- 嚴格存檔與重複過濾 ---
             today_str = get_tz_now().strftime('%Y-%m-%d')
-            # 使用格式化金額 (%.2f) 確保 hash 穩定性
-            formatted_b = "{:.2f}".format(b)
-            data_hash = f"{room}_{formatted_b}" 
+            data_hash = f"{room}_{b:.2f}" 
             
             try:
-                supabase.table("usage_logs").insert({
-                    "line_user_id": user_id, 
-                    "used_at": today_str, 
-                    "rtp_value": r,
-                    "room_id": room,
-                    "data_hash": data_hash
-                }).execute()
-            except Exception:
-                # 攔截資料庫 UNIQUE 錯誤
+                supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "rtp_value": r, "room_id": room, "data_hash": data_hash}).execute()
+            except:
                 line_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="🚫 數據相同，不重複分析。")] ))
                 return
 
-            # 分析完成發送報告
             count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
-            
             line_api.push_message(PushMessageRequest(to=user_id, messages=[
-                FlexMessage(alt_text="機台分析報告", contents=FlexContainer.from_dict(get_flex_card(room, n, r, b, trend_text, trend_color, data_hash))),
+                FlexMessage(alt_text="賽特 AI 趨勢分析", contents=FlexContainer.from_dict(get_flex_card(room, n, r, b, trend_text, trend_color, data_hash))),
                 TextMessage(text=f"📊 今日剩餘額度：{limit - (count_res.count or 0)} / {limit}", quick_reply=get_main_menu())
             ]))
         except Exception as e: logger.error(f"Logic Error: {e}")
 
-# --- LINE Bot Handler ---
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
@@ -194,8 +169,10 @@ def handle_message(event):
     user_id = event.source.user_id
     with ApiClient(configuration) as api_client:
         line_api = MessagingApi(api_client)
-        is_approved = (user_id == ADMIN_LINE_ID)
-        limit = 15
+        is_admin = (user_id == ADMIN_LINE_ID)
+        
+        # 查詢會員狀態
+        is_approved, limit = is_admin, 15
         try:
             m_res = supabase.table("members").select("*").eq("line_user_id", user_id).maybe_single().execute()
             if m_res and m_res.data and m_res.data.get("status") == "approved":
@@ -205,19 +182,34 @@ def handle_message(event):
 
         if event.message.type == "text":
             msg = event.message.text.strip()
+            
+            # --- 管理員專屬：直接回覆 UserID 進行核准 ---
+            if is_admin and (msg.startswith("U") and len(msg) > 30):
+                target_uid = msg.replace("#核准", "").strip()
+                try:
+                    supabase.table("members").update({"status": "approved"}).eq("line_user_id", target_uid).execute()
+                    line_api.push_message(PushMessageRequest(to=target_uid, messages=[TextMessage(text="🎉 您的帳號已核准開通！現在可以傳送截圖開始分析了。")]))
+                    line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"✅ 已成功核准用戶：\n{target_uid}")]))
+                except Exception as e:
+                    line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"❌ 核准失敗：{e}")]))
+                return
+
             if msg == "我的額度":
                 today_str = get_tz_now().strftime('%Y-%m-%d')
                 count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
                 line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"📊 今日使用：{count_res.count or 0} / {limit}", quick_reply=get_main_menu())]))
             elif msg == "我要開通":
                 supabase.table("members").upsert({"line_user_id": user_id, "status": "pending"}, on_conflict="line_user_id").execute()
-                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 申請中。")]))
+                if ADMIN_LINE_ID:
+                    line_api.push_message(PushMessageRequest(to=ADMIN_LINE_ID, messages=[TextMessage(text=f"🔔 收到開通申請！\n\n直接複製下方 ID 並傳送即可核准：\n{user_id}")]))
+                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 申請已送出，請靜候管理員核准。")]))
             else:
-                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="請傳送詳情截圖進行分析。", quick_reply=get_main_menu())]))
+                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🔮 賽特 AI 分析系統：請傳送截圖。", quick_reply=get_main_menu())]))
+
         elif event.message.type == "image":
             if not is_approved:
-                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 請先申請開通。")]))
-            line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🔍 正在分析數據...")] ))
+                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 帳號未核准，請點擊「我要開通」。")]))
+            line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🔍 正在進行 AI 趨勢分析...")] ))
             threading.Thread(target=async_image_analysis, args=(user_id, event.message.id, limit)).start()
 
 if __name__ == "__main__":
