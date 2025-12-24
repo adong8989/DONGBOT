@@ -57,7 +57,7 @@ def get_main_menu():
         QuickReplyItem(action=MessageAction(label="🔓 我要開通", text="我要開通"))
     ])
 
-# 管理員專用：核准按鈕卡片 (保留功能)
+# 管理員專用：核准按鈕卡片
 def get_admin_approve_flex(target_uid):
     return {
         "type": "bubble",
@@ -112,7 +112,12 @@ def async_image_analysis(user_id, message_id, limit):
             res = vision_client.document_text_detection(image=vision.Image(content=img_bytes))
             txt = res.full_text_annotation.text if res.full_text_annotation else ""
             
-            # --- 原功能還原：移除關鍵字過濾，直接處理文字 ---
+            # --- 功能：自動過濾無效圖片 ---
+            valid_keywords = ["賽特", "今日", "未開", "累積"]
+            if not any(k in txt for k in valid_keywords):
+                line_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="❌ 辨識失敗！請傳送包含「未開轉數」與「今日數據」的賽特遊戲截圖。")]))
+                return
+
             lines = [l.strip() for l in txt.split('\n') if l.strip()]
 
             room = "未知"
@@ -200,16 +205,16 @@ def handle_message(event):
         if event.message.type == "text":
             msg = event.message.text.strip()
             
-            # --- 管理員按鈕核准邏輯 (保留) ---
+            # --- 功能：管理員按鈕核准邏輯 ---
             if is_admin and msg.startswith("#核准_"):
                 parts = msg.split("_")
                 if len(parts) == 3:
-                    level = parts[1] 
+                    level = parts[1] # normal or vip
                     target_uid = parts[2]
                     try:
                         supabase.table("members").update({"status": "approved", "member_level": level}).eq("line_user_id", target_uid).execute()
                         line_api.push_message(PushMessageRequest(to=target_uid, messages=[TextMessage(text=f"🎉 您的帳號已核准開通({'VIP' if level=='vip' else '普通'})！現在可以傳截圖開始分析了。")]))
-                        line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"✅ 已核准該用戶為 {level} 權限。")]))
+                        line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"✅ 已成功核准該用戶為 {level} 權限。")]))
                     except Exception as e:
                         logger.error(f"Approve Error: {e}")
                 return
@@ -231,6 +236,7 @@ def handle_message(event):
                 
                 supabase.table("members").upsert({"line_user_id": user_id, "status": "pending"}, on_conflict="line_user_id").execute()
                 if ADMIN_LINE_ID:
+                    # 發送按鈕卡片給管理員
                     line_api.push_message(PushMessageRequest(to=ADMIN_LINE_ID, messages=[FlexMessage(alt_text="收到新申請", contents=FlexContainer.from_dict(get_admin_approve_flex(user_id)))]))
                 line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 申請已送出，請靜候管理員核准管理員LINE:adong8989。")]))
             
