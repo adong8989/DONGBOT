@@ -60,7 +60,7 @@ def get_main_menu():
 def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     random.seed(seed_hash)
     base_color = "#00C853" 
-    label = "✅ 低風險 / 數據優異"
+    label = "✅ 低風險 / 數據優良"
     if n > 250 or r > 120: base_color = "#D50000"; label = "🚨 高風險 / 建議換房"
     elif n > 150 or r > 110: base_color = "#FFAB00"; label = "⚠️ 中風險 / 謹慎進場"
     
@@ -85,8 +85,8 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
                 {"type": "text", "text": f"💰 今日總下注：{b:,.2f}", "size": "md", "weight": "bold"}
             ]},
             {"type": "box", "layout": "vertical", "margin": "md", "backgroundColor": "#F8F8F8", "paddingAll": "10px", "contents": [
-                {"type": "text", "text": "🔮 智能推薦進場訊號", "weight": "bold", "size": "xs", "color": "#555555"},
-                {"type": "text", "text": f"出現「{combo}」後考慮進場。系統提示：此訊號由數據模型生成，僅供參考。", "size": "sm", "margin": "xs", "weight": "bold", "color": "#111111", "wrap": True}
+                {"type": "text", "text": "🔮 AI賽特推薦進場訊號", "weight": "bold", "size": "xs", "color": "#555555"},
+                {"type": "text", "text": f"出現「{combo}」後考慮進場。系統提示：此訊號由賽特數據水庫生成，提供參考。", "size": "sm", "margin": "xs", "weight": "bold", "color": "#111111", "wrap": True}
             ]}
         ]}
     }
@@ -129,10 +129,10 @@ def async_image_analysis(user_id, message_id, limit):
             if n_m: n = int(n_m.group(1))
 
             if r <= 0:
-                line_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="❓ 辨識失敗，請確保數據區清晰。")]))
+                line_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="❓ 辨識失敗，請確保下方數據區清晰。")]))
                 return
 
-            trend_text, trend_color = "🆕 今日首分析", "#AAAAAA"
+            trend_text, trend_color = "🆕 今日首次分析", "#AAAAAA"
             try:
                 last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", descending=True).limit(1).execute()
                 if last_record.data:
@@ -174,12 +174,17 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_api = MessagingApi(api_client)
         is_admin = (user_id == ADMIN_LINE_ID)
+        
+        # 先查詢資料庫中的會員資訊，用於後續邏輯
+        user_data = None
         is_approved, limit = is_admin, 15
         try:
             m_res = supabase.table("members").select("*").eq("line_user_id", user_id).maybe_single().execute()
-            if m_res and m_res.data and m_res.data.get("status") == "approved":
-                is_approved = True
-                limit = 50 if m_res.data.get("member_level") == "vip" else 15
+            if m_res and m_res.data:
+                user_data = m_res.data
+                if user_data.get("status") == "approved":
+                    is_approved = True
+                    limit = 50 if user_data.get("member_level") == "vip" else 15
         except: pass
 
         if event.message.type == "text":
@@ -198,16 +203,30 @@ def handle_message(event):
                 today_str = get_tz_now().strftime('%Y-%m-%d')
                 count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
                 line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"📊 今日使用：{count_res.count or 0} / {limit}", quick_reply=get_main_menu())]))
+            
             elif msg == "我要開通":
+                # --- 新增檢查邏輯 ---
+                if user_data:
+                    status = user_data.get("status")
+                    if status == "approved":
+                        line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 您的帳號早已開通，請直接傳送截圖分析。")]))
+                        return
+                    elif status == "pending":
+                        line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⏳ 申請審核中，請耐心等候管理員處理管理員LINE:adong8989。")]))
+                        return
+                
+                # 若無資料或狀態非 approved/pending，才進行申請
                 supabase.table("members").upsert({"line_user_id": user_id, "status": "pending"}, on_conflict="line_user_id").execute()
                 if ADMIN_LINE_ID:
                     line_api.push_message(PushMessageRequest(to=ADMIN_LINE_ID, messages=[TextMessage(text=f"🔔 收到申請：\n{user_id}")]))
-                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 申請中。")]))
+                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 申請已送出，請靜候管理員核准管理員LINE:adong8989。")]))
+            
             else:
                 line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🔮 賽特 AI 分析系統：請傳送截圖。", quick_reply=get_main_menu())]))
+        
         elif event.message.type == "image":
             if not is_approved:
-                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 請先申請開通。")]))
+                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 請先申請開通管理員LINE:adong8989。")]))
             line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🔍 正在分析數據...")] ))
             threading.Thread(target=async_image_analysis, args=(user_id, event.message.id, limit)).start()
 
