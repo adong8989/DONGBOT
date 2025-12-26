@@ -101,7 +101,6 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
         ]}
     }
 
-# 改為同步辨識函數，回傳訊息清單
 def sync_image_analysis(user_id, message_id, limit):
     with ApiClient(configuration) as api_client:
         blob_api = MessagingApiBlob(api_client)
@@ -202,7 +201,8 @@ def handle_message(event):
                         supabase.table("members").update({"status": "approved", "member_level": level}).eq("line_user_id", target_uid).execute()
                         line_api.push_message(PushMessageRequest(to=target_uid, messages=[TextMessage(text=f"🎉 您的帳號已核准開通({'VIP' if level=='vip' else '普通'})！現在可以傳截圖開始分析了。")]))
                         line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"✅ 已成功核准該用戶。")]))
-                    exceptException as e: logger.error(f"Approve Error: {e}")
+                    except Exception as e: 
+                        logger.error(f"Approve Error: {e}")
                 return
 
             if msg == "我的額度":
