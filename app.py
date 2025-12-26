@@ -3,7 +3,6 @@ import tempfile
 import logging
 import re
 import random
-import threading
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from flask import Flask, request, abort
@@ -57,7 +56,6 @@ def get_main_menu():
         QuickReplyItem(action=MessageAction(label="🔓 我要開通", text="我要開通"))
     ])
 
-# 管理員專用：核准按鈕卡片
 def get_admin_approve_flex(target_uid):
     return {
         "type": "bubble",
@@ -103,23 +101,16 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
         ]}
     }
 
-def async_image_analysis(user_id, message_id, limit):
+# 改為同步辨識函數，回傳訊息清單
+def sync_image_analysis(user_id, message_id, limit):
     with ApiClient(configuration) as api_client:
-        line_api = MessagingApi(api_client)
         blob_api = MessagingApiBlob(api_client)
         try:
             img_bytes = blob_api.get_message_content(message_id)
             res = vision_client.document_text_detection(image=vision.Image(content=img_bytes))
             txt = res.full_text_annotation.text if res.full_text_annotation else ""
             
-            # --- 功能：自動過濾無效圖片 ---
-            valid_keywords = ["賽特", "今日", "未開", "累積"]
-            if not any(k in txt for k in valid_keywords):
-                line_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="❌ 辨識失敗！請傳送包含「未開轉數」與「今日數據」的賽特遊戲截圖。")]))
-                return
-
             lines = [l.strip() for l in txt.split('\n') if l.strip()]
-
             room = "未知"
             for line in reversed(lines):
                 if re.fullmatch(r"\d{3,4}", line):
@@ -145,8 +136,7 @@ def async_image_analysis(user_id, message_id, limit):
             if n_m: n = int(n_m.group(1))
 
             if r <= 0:
-                line_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="❓ 辨識失敗，請確保下方數據區清晰。")]))
-                return
+                return [TextMessage(text="❓ 辨識失敗，請確保下方數據區清晰。")]
 
             trend_text, trend_color = "🆕 今日首次分析", "#AAAAAA"
             try:
@@ -165,16 +155,16 @@ def async_image_analysis(user_id, message_id, limit):
             try:
                 supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "rtp_value": r, "room_id": room, "data_hash": data_hash}).execute()
             except:
-                line_api.push_message(PushMessageRequest(to=user_id, messages=[TextMessage(text="🚫 數據相同，不重複分析。")] ))
-                return
+                return [TextMessage(text="🚫 數據相同，不重複分析。")]
 
             count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
-            line_api.push_message(PushMessageRequest(to=user_id, messages=[
+            return [
                 FlexMessage(alt_text="賽特 AI 趨勢分析", contents=FlexContainer.from_dict(get_flex_card(room, n, r, b, trend_text, trend_color, data_hash))),
                 TextMessage(text=f"📊 今日剩餘額度：{limit - (count_res.count or 0)} / {limit}", quick_reply=get_main_menu())
-            ]))
+            ]
         except Exception as e:
             logger.error(f"Logic Error: {e}")
+            return [TextMessage(text="系統繁忙，請稍後再試。")]
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -204,50 +194,44 @@ def handle_message(event):
 
         if event.message.type == "text":
             msg = event.message.text.strip()
-            
-            # --- 功能：管理員按鈕核准邏輯 ---
             if is_admin and msg.startswith("#核准_"):
                 parts = msg.split("_")
                 if len(parts) == 3:
-                    level = parts[1] # normal or vip
-                    target_uid = parts[2]
+                    level, target_uid = parts[1], parts[2]
                     try:
                         supabase.table("members").update({"status": "approved", "member_level": level}).eq("line_user_id", target_uid).execute()
                         line_api.push_message(PushMessageRequest(to=target_uid, messages=[TextMessage(text=f"🎉 您的帳號已核准開通({'VIP' if level=='vip' else '普通'})！現在可以傳截圖開始分析了。")]))
-                        line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"✅ 已成功核准該用戶為 {level} 權限。")]))
-                    except Exception as e:
-                        logger.error(f"Approve Error: {e}")
+                        line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"✅ 已成功核准該用戶。")]))
+                    exceptException as e: logger.error(f"Approve Error: {e}")
                 return
 
             if msg == "我的額度":
                 today_str = get_tz_now().strftime('%Y-%m-%d')
                 count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
                 line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"📊 今日使用：{count_res.count or 0} / {limit}", quick_reply=get_main_menu())]))
-            
             elif msg == "我要開通":
                 if user_data:
                     status = user_data.get("status")
                     if status == "approved":
-                        line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 您的帳號早已開通，請直接傳送截圖分析。")]))
+                        line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 您的帳號早已開通。")]))
                         return
                     elif status == "pending":
-                        line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⏳ 申請審核中，請耐心等候管理員處理管理員LINE:adong8989。")]))
+                        line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⏳ 申請審核中，管理員LINE:adong8989。")]))
                         return
-                
                 supabase.table("members").upsert({"line_user_id": user_id, "status": "pending"}, on_conflict="line_user_id").execute()
                 if ADMIN_LINE_ID:
-                    # 發送按鈕卡片給管理員
                     line_api.push_message(PushMessageRequest(to=ADMIN_LINE_ID, messages=[FlexMessage(alt_text="收到新申請", contents=FlexContainer.from_dict(get_admin_approve_flex(user_id)))]))
-                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 申請已送出，請靜候管理員核准管理員LINE:adong8989。")]))
-            
+                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 申請已送出，管理員LINE:adong8989。")]))
             else:
                 line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🔮 賽特 AI 分析系統：請傳送截圖。", quick_reply=get_main_menu())]))
         
         elif event.message.type == "image":
             if not is_approved:
                 return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 請先申請開通管理員LINE:adong8989。")]))
-            line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🔍 正在分析數據...")] ))
-            threading.Thread(target=async_image_analysis, args=(user_id, event.message.id, limit)).start()
+            
+            # 同步分析並回覆
+            result_messages = sync_image_analysis(user_id, event.message.id, limit)
+            line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=result_messages))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
