@@ -55,6 +55,7 @@ def get_tz_now(): return datetime.now(timezone(timedelta(hours=8)))
 
 def get_main_menu():
     return QuickReply(items=[
+        QuickReplyItem(action=MessageAction(label="🔥 熱門戰報", text="熱門戰報")),
         QuickReplyItem(action=MessageAction(label="📊 我的額度", text="我的額度")),
         QuickReplyItem(action=MessageAction(label="📘 使用說明", text="使用說明")),
         QuickReplyItem(action=MessageAction(label="🔓 我要開通", text="我要開通"))
@@ -71,67 +72,74 @@ def get_admin_approve_flex(target_uid):
         ]}
     }
 
-# === 修正後的視覺化卡片 ===
+# === 視覺化卡片邏輯 ===
 def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     random.seed(seed_hash)
-    
-    # 風險邏輯判斷
     if n > 250 or r > 120:
-        base_color = "#D50000"
-        label = "🚨 高風險 / 建議換房"
-        risk_percent = "100%"
+        base_color = "#D50000"; label = "🚨 高風險 / 建議換房"; risk_percent = "100%"
     elif n > 150 or r > 110:
-        base_color = "#FFAB00"
-        label = "⚠️ 中風險 / 謹慎進場"
-        risk_percent = "60%"
+        base_color = "#FFAB00"; label = "⚠️ 中風險 / 謹慎進場"; risk_percent = "60%"
     else:
-        base_color = "#00C853"
-        label = "✅ 低風險 / 數據優良"
-        risk_percent = "30%"
+        base_color = "#00C853"; label = "✅ 低風險 / 數據優良"; risk_percent = "30%"
     
-    # 戰神賽特物件組合 (固定 2 種)
-    all_items = [("眼睛", 6), ("弓箭", 6), ("權杖蛇", 6), ("彎刀", 6), 
-                 ("黃寶石", 6), ("紅寶石", 6), ("藍寶石", 6), ("綠寶石", 6), ("紫寶石", 6), ("聖甲蟲", 3)]
+    all_items = [("眼睛", 6), ("弓箭", 6), ("權杖蛇", 6), ("彎刀", 6), ("紅寶石", 6), ("藍寶石", 6), ("聖甲蟲", 3)]
     selected_items = random.sample(all_items, 2)
     combo = "、".join([f"{name}{random.randint(1, limit)}顆" for name, limit in selected_items])
-    
-    tips = [f"觀測到「{combo}」組合時，演算法預測即將進入噴發期。",
-            f"當盤面連續出現「{combo}」，建議適度提升下注額度。",
-            f"系統追蹤到「{combo}」為當前房間之熱門噴發前兆。",
-            f"根據水庫水位，盤面若補齊「{combo}」後，大獎機率極高。"]
-    current_tip = random.choice(tips)
+    current_tip = random.choice([f"觀測到「{combo}」組合時，即將進入噴發期。", f"當盤面連續出現「{combo}」，建議加碼。"])
     random.seed(None)
     
     return {
         "type": "bubble",
-        "header": {
-            "type": "box", "layout": "vertical", 
-            "contents": [{"type": "text", "text": f"賽特 {room} 房 AI 趨勢分析", "color": "#FFFFFF", "weight": "bold", "size": "md"}], 
-            "backgroundColor": base_color
-        },
+        "header": {"type": "box", "layout": "vertical", "contents": [{"type": "text", "text": f"賽特 {room} 房 趨勢分析", "color": "#FFFFFF", "weight": "bold"}], "backgroundColor": base_color},
         "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
             {"type": "text", "text": label, "size": "xl", "weight": "bold", "color": base_color},
-            # --- 修正後的視覺化進度條 ---
             {"type": "box", "layout": "vertical", "margin": "md", "contents": [
-                {"type": "text", "text": "當前盤面風險指數", "size": "xs", "color": "#888888", "margin": "xs"},
+                {"type": "text", "text": "風險指數", "size": "xs", "color": "#888888"},
                 {"type": "box", "layout": "vertical", "backgroundColor": "#EEEEEE", "height": "8px", "margin": "sm", "cornerRadius": "4px", "contents": [
                     {"type": "box", "layout": "vertical", "width": risk_percent, "backgroundColor": base_color, "height": "8px", "cornerRadius": "4px", "contents": []}
                 ]}
             ]},
             {"type": "text", "text": trend_text, "size": "sm", "color": trend_color, "weight": "bold"},
             {"type": "separator"},
-            {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
-                {"type": "text", "text": f"📍 未開轉數：{n}", "size": "md", "weight": "bold"},
-                {"type": "text", "text": f"📈 今日 RTP：{r}%", "size": "md", "weight": "bold"},
-                {"type": "text", "text": f"💰 今日總下注：{b:,.2f}", "size": "md", "weight": "bold"}
-            ]},
+            {"type": "text", "text": f"📍 未開：{n} | 📈 RTP：{r}%", "weight": "bold"},
             {"type": "box", "layout": "vertical", "margin": "md", "backgroundColor": "#F8F8F8", "paddingAll": "10px", "contents": [
-                {"type": "text", "text": "🔮 AI 賽特推薦進場訊號", "weight": "bold", "size": "xs", "color": "#555555"},
-                {"type": "text", "text": f"{current_tip}\n系統提示：此訊號由賽特數據水庫生成，提供參考。", "size": "sm", "margin": "xs", "weight": "bold", "color": "#111111", "wrap": True}
+                {"type": "text", "text": "🔮 AI 進場訊號", "weight": "bold", "size": "xs", "color": "#555555"},
+                {"type": "text", "text": f"{current_tip}", "size": "sm", "wrap": True}
             ]}
         ]}
     }
 
+# === 新增功能：取得熱門房間戰報 ===
+def get_trending_report():
+    try:
+        # 抓取過去 1 小時的數據 (UTC+8 修正)
+        one_hour_ago = (get_tz_now() - timedelta(hours=1)).isoformat()
+        res = supabase.table("usage_logs").select("room_id, rtp_value, created_at").gt("created_at", one_hour_ago).order("rtp_value", descending=True).execute()
+        
+        if not res.data:
+            return "目前暫無 1 小時內的熱門數據，請稍後再試。"
+        
+        # 房間去重，只取最高的一筆
+        rooms = {}
+        for item in res.data:
+            rid = item['room_id']
+            if rid not in rooms or item['rtp_value'] > rooms[rid]['rtp']:
+                rooms[rid] = {'rtp': item['rtp_value'], 'time': item['created_at']}
+        
+        report_text = "🔥 戰神賽特｜1H 熱門房間排行：\n"
+        sorted_rooms = sorted(rooms.items(), key=lambda x: x[1]['rtp'], reverse=True)[:5] # 取前 5 名
+        
+        for i, (rid, data) in enumerate(sorted_rooms):
+            medals = ["🥇", "🥈", "🥉", "▫️", "▫️"]
+            report_text += f"{medals[i]} 房號: {rid} | RTP: {data['rtp']}%\n"
+            
+        report_text += "\n💡 數據由全體用戶即時貢獻。"
+        return report_text
+    except Exception as e:
+        logger.error(f"Report Error: {e}")
+        return "戰報生成失敗，請稍後再試。"
+
+# === 核心分析邏輯 ===
 def sync_image_analysis(user_id, message_id, limit):
     with ApiClient(configuration) as api_client:
         blob_api = MessagingApiBlob(api_client)
@@ -143,9 +151,7 @@ def sync_image_analysis(user_id, message_id, limit):
             
             room = "未知"
             for line in reversed(lines):
-                if re.fullmatch(r"\d{3,4}", line):
-                    room = line
-                    break
+                if re.fullmatch(r"\d{3,4}", line): room = line; break
 
             r, b = 0.0, 0.0
             for i, line in enumerate(lines):
@@ -156,26 +162,21 @@ def sync_image_analysis(user_id, message_id, limit):
                     amt_m = re.findall(r"(\d{1,3}(?:,\d{3})*(?:\.\d{2}))", scope)
                     for val in amt_m:
                         cv = float(val.replace(',', ''))
-                        if cv != r: 
-                            b = cv
-                            break
+                        if cv != r: b = cv; break
                     break
 
             n = 0
             n_m = re.search(r"未開\s*(\d+)", txt)
             if n_m: n = int(n_m.group(1))
-
             if r <= 0: return [TextMessage(text="❓ 辨識失敗，請確保數據區清晰。")]
 
             trend_text, trend_color = "🆕 今日首次分析", "#AAAAAA"
-            try:
-                last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", descending=True).limit(1).execute()
-                if last_record.data:
-                    diff = r - float(last_record.data[0]['rtp_value'])
-                    if diff > 0.01: trend_text, trend_color = f"🔥 趨勢升溫 (+{diff:.2f}%)", "#D50000"
-                    elif diff < -0.01: trend_text, trend_color = f"❄️ 數據冷卻 ({diff:.2f}%)", "#1976D2"
-                    else: trend_text, trend_color = "➡️ 數據平穩", "#555555"
-            except: pass
+            last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", descending=True).limit(1).execute()
+            if last_record.data:
+                diff = r - float(last_record.data[0]['rtp_value'])
+                if diff > 0.01: trend_text, trend_color = f"🔥 趨勢升溫 (+{diff:.2f}%)", "#D50000"
+                elif diff < -0.01: trend_text, trend_color = f"❄️ 數據冷卻 ({diff:.2f}%)", "#1976D2"
+                else: trend_text, trend_color = "➡️ 數據平穩", "#555555"
 
             today_str = get_tz_now().strftime('%Y-%m-%d')
             data_hash = f"{room}_{b:.2f}" 
@@ -185,7 +186,7 @@ def sync_image_analysis(user_id, message_id, limit):
 
             count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
             return [
-                FlexMessage(alt_text="賽特 AI 趨勢分析", contents=FlexContainer.from_dict(get_flex_card(room, n, r, b, trend_text, trend_color, data_hash))),
+                FlexMessage(alt_text="賽特 AI 分析", contents=FlexContainer.from_dict(get_flex_card(room, n, r, b, trend_text, trend_color, data_hash))),
                 TextMessage(text=f"📊 今日剩餘額度：{limit - (count_res.count or 0)} / {limit}", quick_reply=get_main_menu())
             ]
         except Exception as e:
@@ -206,7 +207,6 @@ def handle_message(event):
     with ApiClient(configuration) as api_client:
         line_api = MessagingApi(api_client)
         is_admin = (user_id == ADMIN_LINE_ID)
-        
         user_data = None
         is_approved, limit = is_admin, 15
         try:
@@ -225,11 +225,14 @@ def handle_message(event):
                 if len(parts) == 3:
                     level, target_uid = parts[1], parts[2]
                     supabase.table("members").update({"status": "approved", "member_level": level}).eq("line_user_id", target_uid).execute()
-                    line_api.push_message(PushMessageRequest(to=target_uid, messages=[TextMessage(text=f"🎉 您的帳號已核准開通({'VIP' if level=='vip' else '普通'})！現在可以開始分析了。")]))
+                    line_api.push_message(PushMessageRequest(to=target_uid, messages=[TextMessage(text=f"🎉 您的帳號已核准開通！")]))
                     line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 已核准。")]))
                 return
 
-            if msg == "我的額度":
+            if msg == "熱門戰報":
+                report = get_trending_report()
+                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=report, quick_reply=get_main_menu())]))
+            elif msg == "我的額度":
                 today_str = get_tz_now().strftime('%Y-%m-%d')
                 count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
                 line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"📊 今日使用：{count_res.count or 0} / {limit}", quick_reply=get_main_menu())]))
