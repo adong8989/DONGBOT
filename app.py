@@ -42,7 +42,7 @@ try:
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as tmp_file:
             tmp_file.write(GCP_SA_KEY_JSON)
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = tmp_file.name
-        vision_client = vision.ImageAnnotatorClient()
+            vision_client = vision.ImageAnnotatorClient()
 except Exception as e:
     logger.error(f"Vision Client Init Error: {e}")
 
@@ -74,8 +74,34 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     if n > 250 or r > 120: base_color = "#D50000"; label = "🚨 高風險 / 建議換房"
     elif n > 150 or r > 110: base_color = "#FFAB00"; label = "⚠️ 中風險 / 謹慎進場"
     
-    s_pool = [("聖甲蟲", 3), ("紅寶石", 7), ("藍寶石", 7), ("眼睛", 5)]
-    combo = "、".join([f"{s[0]}{random.randint(1,s[1])}顆" for s in random.sample(s_pool, 2)])
+    # --- 戰神賽特專屬物件水庫 ---
+    # 大圖: 眼睛, 弓箭, 權杖蛇, 彎刀 (上限6)
+    # 寶石: 黃, 紅, 藍, 綠, 紫 (上限6)
+    # 特殊: 聖甲蟲 (上限3)
+    big_icons = [("眼睛", 6), ("弓箭", 6), ("權杖蛇", 6), ("彎刀", 6)]
+    gems = [("黃寶石", 6), ("紅寶石", 6), ("藍寶石", 6), ("綠寶石", 6), ("紫寶石", 6)]
+    special = [("聖甲蟲", 3)]
+    
+    all_items = big_icons + gems + special
+    
+    # 隨機抽取 2~3 個不重複物件作為訊號
+    sample_size = random.choice([2, 3])
+    selected_items = random.sample(all_items, sample_size)
+    
+    combo_list = []
+    for name, limit in selected_items:
+        count = random.randint(1, limit)
+        combo_list.append(f"{name}{count}顆")
+    
+    combo = "、".join(combo_list)
+    
+    tips = [
+        f"觀測到「{combo}」組合時，演算法預測即將進入噴發期。",
+        f"當盤面連續出現「{combo}」，建議適度提升下注額度。",
+        f"系統追蹤到「{combo}」為當前房間之熱門噴發前兆。",
+        f"根據水庫水位，盤面若補齊「{combo}」後，大獎機率極高。"
+    ]
+    current_tip = random.choice(tips)
     random.seed(None)
     
     return {
@@ -96,7 +122,7 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
             ]},
             {"type": "box", "layout": "vertical", "margin": "md", "backgroundColor": "#F8F8F8", "paddingAll": "10px", "contents": [
                 {"type": "text", "text": "🔮 AI賽特推薦進場訊號", "weight": "bold", "size": "xs", "color": "#555555"},
-                {"type": "text", "text": f"出現「{combo}」後考慮進場。系統提示：此訊號由賽特數據水庫生成，提供參考。", "size": "sm", "margin": "xs", "weight": "bold", "color": "#111111", "wrap": True}
+                {"type": "text", "text": f"{current_tip}\n系統提示：此訊號由賽特數據水庫生成，提供參考。", "size": "sm", "margin": "xs", "weight": "bold", "color": "#111111", "wrap": True}
             ]}
         ]}
     }
@@ -151,10 +177,12 @@ def sync_image_analysis(user_id, message_id, limit):
             today_str = get_tz_now().strftime('%Y-%m-%d')
             data_hash = f"{room}_{b:.2f}" 
             
+            # --- 修正重複數據不中斷邏輯 ---
             try:
                 supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "rtp_value": r, "room_id": room, "data_hash": data_hash}).execute()
-            except:
-                return [TextMessage(text="🚫 數據相同，不重複分析。")]
+            except Exception as e:
+                logger.warning(f"Data entry duplicate or error: {e}")
+                # 這裡不 return，讓程式繼續往下跑出卡片
 
             count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
             return [
@@ -229,7 +257,6 @@ def handle_message(event):
             if not is_approved:
                 return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 請先申請開通管理員LINE:adong8989。")]))
             
-            # 同步分析並回覆
             result_messages = sync_image_analysis(user_id, event.message.id, limit)
             line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=result_messages))
 
