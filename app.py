@@ -72,7 +72,6 @@ def get_admin_approve_flex(target_uid):
         ]}
     }
 
-# === 修正後的視覺化卡片 (補回下注額) ===
 def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     random.seed(seed_hash)
     if n > 250 or r > 120:
@@ -102,7 +101,7 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
             {"type": "text", "text": trend_text, "size": "sm", "color": trend_color, "weight": "bold"},
             {"type": "separator"},
             {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
-                {"type": "text", "text": f"📍  未開轉數：{n}", "size": "md", "weight": "bold"},
+                {"type": "text", "text": f"📍 未開轉數：{n}", "size": "md", "weight": "bold"},
                 {"type": "text", "text": f"📈 今日 RTP：{r}%", "size": "md", "weight": "bold"},
                 {"type": "text", "text": f"💰 今日總下注：{b:,.2f}", "size": "md", "weight": "bold"}
             ]},
@@ -113,36 +112,24 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
         ]}
     }
 
-# === 修正後的熱門戰報 (修正 order 語法) ===
 def get_trending_report():
     try:
-        # 修正語法：使用 desc=True 或是傳入參數
         res = supabase.table("usage_logs").select("room_id, rtp_value").order("created_at", desc=True).limit(100).execute()
-        
-        if not res.data:
-            return "目前暫無數據，請先傳送截圖進行分析。"
-        
+        if not res.data: return "目前暫無數據，請先傳送截圖。"
         rooms = {}
         for item in res.data:
-            rid = str(item['room_id'])
-            rtp = float(item['rtp_value'])
-            if rid not in rooms or rtp > rooms[rid]:
-                rooms[rid] = rtp
-        
+            rid = str(item['room_id']); rtp = float(item['rtp_value'])
+            if rid not in rooms or rtp > rooms[rid]: rooms[rid] = rtp
         sorted_rooms = sorted(rooms.items(), key=lambda x: x[1], reverse=True)[:5]
-        
         report_text = "🔥 戰神賽特｜即時熱門排行：\n"
         medals = ["🥇", "🥈", "🥉", "▫️", "▫️"]
         for i, (rid, rtp) in enumerate(sorted_rooms):
             report_text += f"{medals[i]} 房號: {rid} | RTP: {rtp}%\n"
-            
-        report_text += "\n💡 數據由全體用戶貢獻。"
-        return report_text
+        return report_text + "\n💡 數據由全體用戶貢獻。"
     except Exception as e:
         logger.error(f"Report Error: {e}")
         return f"戰報生成錯誤: {str(e)}"
 
-# === 核心分析邏輯 ===
 def sync_image_analysis(user_id, message_id, limit):
     with ApiClient(configuration) as api_client:
         blob_api = MessagingApiBlob(api_client)
@@ -173,9 +160,16 @@ def sync_image_analysis(user_id, message_id, limit):
             if n_m: n = int(n_m.group(1))
             if r <= 0: return [TextMessage(text="❓ 辨識失敗，請確保數據區清晰。")]
 
+            today_str = get_tz_now().strftime('%Y-%m-%d')
+            data_hash = f"{room}_{b:.2f}" 
+            
+            # 重複檢查
+            dup_check = supabase.table("usage_logs").select("id").eq("line_user_id", user_id).eq("used_at", today_str).eq("data_hash", data_hash).execute()
+            if dup_check.data:
+                return [TextMessage(text="⚠️ 此截圖已分析過，請勿重複傳送以免浪費額度。", quick_reply=get_main_menu())]
+
             trend_text, trend_color = "🆕 今日首次分析", "#AAAAAA"
             try:
-                # 這裡也同步修正 order 語法
                 last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", desc=True).limit(1).execute()
                 if last_record.data:
                     diff = r - float(last_record.data[0]['rtp_value'])
@@ -184,13 +178,9 @@ def sync_image_analysis(user_id, message_id, limit):
                     else: trend_text, trend_color = "➡️ 數據平穩", "#555555"
             except: pass
 
-            today_str = get_tz_now().strftime('%Y-%m-%d')
-            data_hash = f"{room}_{b:.2f}" 
-            try:
-                supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "rtp_value": r, "room_id": room, "data_hash": data_hash}).execute()
-            except: pass
-
+            supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "rtp_value": r, "room_id": room, "data_hash": data_hash}).execute()
             count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
+            
             return [
                 FlexMessage(alt_text="賽特 AI 分析", contents=FlexContainer.from_dict(get_flex_card(room, n, r, b, trend_text, trend_color, data_hash))),
                 TextMessage(text=f"📊 今日剩餘額度：{limit - (count_res.count or 0)} / {limit}", quick_reply=get_main_menu())
