@@ -72,6 +72,7 @@ def get_admin_approve_flex(target_uid):
         ]}
     }
 
+# === 修正後的視覺化卡片 (補回下注額) ===
 def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     random.seed(seed_hash)
     if n > 250 or r > 120:
@@ -84,7 +85,7 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     all_items = [("眼睛", 6), ("弓箭", 6), ("權杖蛇", 6), ("彎刀", 6), ("紅寶石", 6), ("藍寶石", 6), ("聖甲蟲", 3)]
     selected_items = random.sample(all_items, 2)
     combo = "、".join([f"{name}{random.randint(1, limit)}顆" for name, limit in selected_items])
-    current_tip = random.choice([f"觀測到「{combo}」組合時，即將進入噴發期。", f"盤面出現「{combo}」，建議適度調高。"])
+    current_tip = random.choice([f"觀測到「{combo}」組合時，即將進入噴發期。", f"盤面出現「{combo}」，建議適度調高下注。"])
     random.seed(None)
     
     return {
@@ -100,7 +101,11 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
             ]},
             {"type": "text", "text": trend_text, "size": "sm", "color": trend_color, "weight": "bold"},
             {"type": "separator"},
-            {"type": "text", "text": f"📍 未開：{n} | 📈 RTP：{r}%", "weight": "bold"},
+            {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
+                {"type": "text", "text": f"📍  未開轉數：{n}", "size": "md", "weight": "bold"},
+                {"type": "text", "text": f"📈 今日 RTP：{r}%", "size": "md", "weight": "bold"},
+                {"type": "text", "text": f"💰 今日總下注：{b:,.2f}", "size": "md", "weight": "bold"}
+            ]},
             {"type": "box", "layout": "vertical", "margin": "md", "backgroundColor": "#F8F8F8", "paddingAll": "10px", "contents": [
                 {"type": "text", "text": "🔮 AI 進場訊號", "weight": "bold", "size": "xs", "color": "#555555"},
                 {"type": "text", "text": f"{current_tip}", "size": "sm", "wrap": True}
@@ -108,11 +113,11 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
         ]}
     }
 
-# === 修正後的熱門戰報 (更強壯的過濾邏輯) ===
+# === 修正後的熱門戰報 (修正 order 語法) ===
 def get_trending_report():
     try:
-        # 使用更簡單的過濾：只抓最近 100 筆數據來分析排行，避免時間格式出錯
-        res = supabase.table("usage_logs").select("room_id, rtp_value").order("created_at", descending=True).limit(100).execute()
+        # 修正語法：使用 desc=True 或是傳入參數
+        res = supabase.table("usage_logs").select("room_id, rtp_value").order("created_at", desc=True).limit(100).execute()
         
         if not res.data:
             return "目前暫無數據，請先傳送截圖進行分析。"
@@ -170,7 +175,8 @@ def sync_image_analysis(user_id, message_id, limit):
 
             trend_text, trend_color = "🆕 今日首次分析", "#AAAAAA"
             try:
-                last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", descending=True).limit(1).execute()
+                # 這裡也同步修正 order 語法
+                last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", desc=True).limit(1).execute()
                 if last_record.data:
                     diff = r - float(last_record.data[0]['rtp_value'])
                     if diff > 0.01: trend_text, trend_color = f"🔥 趨勢升溫 (+{diff:.2f}%)", "#D50000"
