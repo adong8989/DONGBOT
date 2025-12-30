@@ -39,12 +39,11 @@ configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# === 修正後的 Vision Client 初始化（不使用臨時檔案，避免 JSONDecodeError） ===
+# === Vision Client 初始化（穩定版） ===
 vision_client = None
 if GCP_SA_KEY_JSON:
     try:
         from google.cloud import vision
-        # 直接解析環境變數中的 JSON
         key_dict = json.loads(GCP_SA_KEY_JSON)
         creds = service_account.Credentials.from_service_account_info(key_dict)
         vision_client = vision.ImageAnnotatorClient(credentials=creds)
@@ -88,8 +87,9 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     special = [("聖甲蟲", 3)]
     
     all_items = big_icons + gems + special
-    sample_size = random.choice([2, 3])
-    selected_items = random.sample(all_items, sample_size)
+    
+    # --- 調整點：固定選取 2 種物件組合 ---
+    selected_items = random.sample(all_items, 2)
     
     combo_list = []
     for name, limit in selected_items:
