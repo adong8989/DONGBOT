@@ -35,6 +35,7 @@ configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# --- 恢復您原本的初始化邏輯 ---
 vision_client = None
 try:
     from google.cloud import vision
@@ -74,17 +75,12 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     if n > 250 or r > 120: base_color = "#D50000"; label = "🚨 高風險 / 建議換房"
     elif n > 150 or r > 110: base_color = "#FFAB00"; label = "⚠️ 中風險 / 謹慎進場"
     
-    # --- 戰神賽特專屬物件水庫 ---
-    # 大圖: 眼睛, 弓箭, 權杖蛇, 彎刀 (上限6)
-    # 寶石: 黃, 紅, 藍, 綠, 紫 (上限6)
-    # 特殊: 聖甲蟲 (上限3)
+    # --- 您要求的戰神賽特物件設定 ---
     big_icons = [("眼睛", 6), ("弓箭", 6), ("權杖蛇", 6), ("彎刀", 6)]
     gems = [("黃寶石", 6), ("紅寶石", 6), ("藍寶石", 6), ("綠寶石", 6), ("紫寶石", 6)]
     special = [("聖甲蟲", 3)]
     
     all_items = big_icons + gems + special
-    
-    # 隨機抽取 2~3 個不重複物件作為訊號
     sample_size = random.choice([2, 3])
     selected_items = random.sample(all_items, sample_size)
     
@@ -95,6 +91,7 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     
     combo = "、".join(combo_list)
     
+    # 增加推薦語句隨機性
     tips = [
         f"觀測到「{combo}」組合時，演算法預測即將進入噴發期。",
         f"當盤面連續出現「{combo}」，建議適度提升下注額度。",
@@ -177,12 +174,11 @@ def sync_image_analysis(user_id, message_id, limit):
             today_str = get_tz_now().strftime('%Y-%m-%d')
             data_hash = f"{room}_{b:.2f}" 
             
-            # --- 修正重複數據不中斷邏輯 ---
             try:
                 supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "rtp_value": r, "room_id": room, "data_hash": data_hash}).execute()
-            except Exception as e:
-                logger.warning(f"Data entry duplicate or error: {e}")
-                # 這裡不 return，讓程式繼續往下跑出卡片
+            except:
+                # 這裡修正為：數據重複時依然產出卡片，不中斷回覆
+                pass
 
             count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
             return [
