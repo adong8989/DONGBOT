@@ -19,7 +19,6 @@ from linebot.v3.webhooks import MessageEvent
 from linebot.v3.messaging.models import QuickReply, QuickReplyItem, MessageAction
 from linebot.v3.exceptions import InvalidSignatureError
 
-# 匯入 Google 認證庫
 from google.oauth2 import service_account
 
 load_dotenv()
@@ -72,7 +71,7 @@ def get_admin_approve_flex(target_uid):
         ]}
     }
 
-# === 優化後的視覺化卡片 ===
+# === 修正後的視覺化卡片 ===
 def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     random.seed(seed_hash)
     
@@ -81,17 +80,14 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
         base_color = "#D50000"
         label = "🚨 高風險 / 建議換房"
         risk_percent = "100%"
-        risk_bg = "#FFEBEE"
     elif n > 150 or r > 110:
         base_color = "#FFAB00"
         label = "⚠️ 中風險 / 謹慎進場"
         risk_percent = "60%"
-        risk_bg = "#FFF8E1"
     else:
         base_color = "#00C853"
         label = "✅ 低風險 / 數據優良"
         risk_percent = "30%"
-        risk_bg = "#E8F5E9"
     
     # 戰神賽特物件組合 (固定 2 種)
     all_items = [("眼睛", 6), ("弓箭", 6), ("權杖蛇", 6), ("彎刀", 6), 
@@ -115,11 +111,11 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
         },
         "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
             {"type": "text", "text": label, "size": "xl", "weight": "bold", "color": base_color},
-            # --- 視覺化進度條區塊 ---
+            # --- 修正後的視覺化進度條 ---
             {"type": "box", "layout": "vertical", "margin": "md", "contents": [
                 {"type": "text", "text": "當前盤面風險指數", "size": "xs", "color": "#888888", "margin": "xs"},
                 {"type": "box", "layout": "vertical", "backgroundColor": "#EEEEEE", "height": "8px", "margin": "sm", "cornerRadius": "4px", "contents": [
-                    {"type": "box", "layout": "vertical", "width": risk_percent, "backgroundColor": base_color, "height": "8px", "cornerRadius": "4px"}
+                    {"type": "box", "layout": "vertical", "width": risk_percent, "backgroundColor": base_color, "height": "8px", "cornerRadius": "4px", "contents": []}
                 ]}
             ]},
             {"type": "text", "text": trend_text, "size": "sm", "color": trend_color, "weight": "bold"},
@@ -136,7 +132,6 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
         ]}
     }
 
-# === 核心分析邏輯 ===
 def sync_image_analysis(user_id, message_id, limit):
     with ApiClient(configuration) as api_client:
         blob_api = MessagingApiBlob(api_client)
@@ -197,7 +192,6 @@ def sync_image_analysis(user_id, message_id, limit):
             logger.error(f"Logic Error: {e}")
             return [TextMessage(text="系統繁忙，請稍後再試。")]
 
-# === Flask 路由與事件處理 ===
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
@@ -231,7 +225,7 @@ def handle_message(event):
                 if len(parts) == 3:
                     level, target_uid = parts[1], parts[2]
                     supabase.table("members").update({"status": "approved", "member_level": level}).eq("line_user_id", target_uid).execute()
-                    line_api.push_message(PushMessageRequest(to=target_uid, messages=[TextMessage(text=f"🎉 您的帳號已核准開通({'VIP' if level=='vip' else '普通'})！")]))
+                    line_api.push_message(PushMessageRequest(to=target_uid, messages=[TextMessage(text=f"🎉 您的帳號已核准開通({'VIP' if level=='vip' else '普通'})！現在可以開始分析了。")]))
                     line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 已核准。")]))
                 return
 
