@@ -3,6 +3,7 @@ import tempfile
 import logging
 import re
 import random
+import json
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from flask import Flask, request, abort
@@ -17,6 +18,9 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import MessageEvent
 from linebot.v3.messaging.models import QuickReply, QuickReplyItem, MessageAction
 from linebot.v3.exceptions import InvalidSignatureError
+
+# 匯入 Google 認證庫，確保金鑰讀取穩定
+from google.oauth2 import service_account
 
 load_dotenv()
 app = Flask(__name__)
@@ -35,17 +39,20 @@ configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- 恢復您原本的初始化邏輯 ---
+# === 修正後的 Vision Client 初始化（不使用臨時檔案，避免 JSONDecodeError） ===
 vision_client = None
-try:
-    from google.cloud import vision
-    if GCP_SA_KEY_JSON:
-        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as tmp_file:
-            tmp_file.write(GCP_SA_KEY_JSON)
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = tmp_file.name
-            vision_client = vision.ImageAnnotatorClient()
-except Exception as e:
-    logger.error(f"Vision Client Init Error: {e}")
+if GCP_SA_KEY_JSON:
+    try:
+        from google.cloud import vision
+        # 直接解析環境變數中的 JSON
+        key_dict = json.loads(GCP_SA_KEY_JSON)
+        creds = service_account.Credentials.from_service_account_info(key_dict)
+        vision_client = vision.ImageAnnotatorClient(credentials=creds)
+        logger.info("✅ Google Vision Client 啟動成功")
+    except Exception as e:
+        logger.error(f"❌ Vision Client 啟動失敗: {e}")
+else:
+    logger.error("❌ 找不到 GCP_SA_KEY_JSON 環境變數")
 
 # === 工具函數 ===
 def get_tz_now(): return datetime.now(timezone(timedelta(hours=8)))
@@ -75,7 +82,7 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     if n > 250 or r > 120: base_color = "#D50000"; label = "🚨 高風險 / 建議換房"
     elif n > 150 or r > 110: base_color = "#FFAB00"; label = "⚠️ 中風險 / 謹慎進場"
     
-    # --- 您要求的戰神賽特物件設定 ---
+    # --- 戰神賽特專屬物件水庫 ---
     big_icons = [("眼睛", 6), ("弓箭", 6), ("權杖蛇", 6), ("彎刀", 6)]
     gems = [("黃寶石", 6), ("紅寶石", 6), ("藍寶石", 6), ("綠寶石", 6), ("紫寶石", 6)]
     special = [("聖甲蟲", 3)]
@@ -91,7 +98,6 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     
     combo = "、".join(combo_list)
     
-    # 增加推薦語句隨機性
     tips = [
         f"觀測到「{combo}」組合時，演算法預測即將進入噴發期。",
         f"當盤面連續出現「{combo}」，建議適度提升下注額度。",
@@ -177,8 +183,7 @@ def sync_image_analysis(user_id, message_id, limit):
             try:
                 supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "rtp_value": r, "room_id": room, "data_hash": data_hash}).execute()
             except:
-                # 這裡修正為：數據重複時依然產出卡片，不中斷回覆
-                pass
+                pass # 重複數據不報錯，繼續出卡片
 
             count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
             return [
