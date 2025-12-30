@@ -72,7 +72,6 @@ def get_admin_approve_flex(target_uid):
         ]}
     }
 
-# === 視覺化卡片邏輯 ===
 def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     random.seed(seed_hash)
     if n > 250 or r > 120:
@@ -85,7 +84,7 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     all_items = [("眼睛", 6), ("弓箭", 6), ("權杖蛇", 6), ("彎刀", 6), ("紅寶石", 6), ("藍寶石", 6), ("聖甲蟲", 3)]
     selected_items = random.sample(all_items, 2)
     combo = "、".join([f"{name}{random.randint(1, limit)}顆" for name, limit in selected_items])
-    current_tip = random.choice([f"觀測到「{combo}」組合時，即將進入噴發期。", f"當盤面連續出現「{combo}」，建議加碼。"])
+    current_tip = random.choice([f"觀測到「{combo}」組合時，即將進入噴發期。", f"盤面出現「{combo}」，建議適度調高。"])
     random.seed(None)
     
     return {
@@ -109,35 +108,34 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
         ]}
     }
 
-# === 新增功能：取得熱門房間戰報 ===
+# === 修正後的熱門戰報 (更強壯的過濾邏輯) ===
 def get_trending_report():
     try:
-        # 抓取過去 1 小時的數據 (UTC+8 修正)
-        one_hour_ago = (get_tz_now() - timedelta(hours=1)).isoformat()
-        res = supabase.table("usage_logs").select("room_id, rtp_value, created_at").gt("created_at", one_hour_ago).order("rtp_value", descending=True).execute()
+        # 使用更簡單的過濾：只抓最近 100 筆數據來分析排行，避免時間格式出錯
+        res = supabase.table("usage_logs").select("room_id, rtp_value").order("created_at", descending=True).limit(100).execute()
         
         if not res.data:
-            return "目前暫無 1 小時內的熱門數據，請稍後再試。"
+            return "目前暫無數據，請先傳送截圖進行分析。"
         
-        # 房間去重，只取最高的一筆
         rooms = {}
         for item in res.data:
-            rid = item['room_id']
-            if rid not in rooms or item['rtp_value'] > rooms[rid]['rtp']:
-                rooms[rid] = {'rtp': item['rtp_value'], 'time': item['created_at']}
+            rid = str(item['room_id'])
+            rtp = float(item['rtp_value'])
+            if rid not in rooms or rtp > rooms[rid]:
+                rooms[rid] = rtp
         
-        report_text = "🔥 戰神賽特｜1H 熱門房間排行：\n"
-        sorted_rooms = sorted(rooms.items(), key=lambda x: x[1]['rtp'], reverse=True)[:5] # 取前 5 名
+        sorted_rooms = sorted(rooms.items(), key=lambda x: x[1], reverse=True)[:5]
         
-        for i, (rid, data) in enumerate(sorted_rooms):
-            medals = ["🥇", "🥈", "🥉", "▫️", "▫️"]
-            report_text += f"{medals[i]} 房號: {rid} | RTP: {data['rtp']}%\n"
+        report_text = "🔥 戰神賽特｜即時熱門排行：\n"
+        medals = ["🥇", "🥈", "🥉", "▫️", "▫️"]
+        for i, (rid, rtp) in enumerate(sorted_rooms):
+            report_text += f"{medals[i]} 房號: {rid} | RTP: {rtp}%\n"
             
-        report_text += "\n💡 數據由全體用戶即時貢獻。"
+        report_text += "\n💡 數據由全體用戶貢獻。"
         return report_text
     except Exception as e:
         logger.error(f"Report Error: {e}")
-        return "戰報生成失敗，請稍後再試。"
+        return f"戰報生成錯誤: {str(e)}"
 
 # === 核心分析邏輯 ===
 def sync_image_analysis(user_id, message_id, limit):
@@ -171,12 +169,14 @@ def sync_image_analysis(user_id, message_id, limit):
             if r <= 0: return [TextMessage(text="❓ 辨識失敗，請確保數據區清晰。")]
 
             trend_text, trend_color = "🆕 今日首次分析", "#AAAAAA"
-            last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", descending=True).limit(1).execute()
-            if last_record.data:
-                diff = r - float(last_record.data[0]['rtp_value'])
-                if diff > 0.01: trend_text, trend_color = f"🔥 趨勢升溫 (+{diff:.2f}%)", "#D50000"
-                elif diff < -0.01: trend_text, trend_color = f"❄️ 數據冷卻 ({diff:.2f}%)", "#1976D2"
-                else: trend_text, trend_color = "➡️ 數據平穩", "#555555"
+            try:
+                last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", descending=True).limit(1).execute()
+                if last_record.data:
+                    diff = r - float(last_record.data[0]['rtp_value'])
+                    if diff > 0.01: trend_text, trend_color = f"🔥 趨勢升溫 (+{diff:.2f}%)", "#D50000"
+                    elif diff < -0.01: trend_text, trend_color = f"❄️ 數據冷卻 ({diff:.2f}%)", "#1976D2"
+                    else: trend_text, trend_color = "➡️ 數據平穩", "#555555"
+            except: pass
 
             today_str = get_tz_now().strftime('%Y-%m-%d')
             data_hash = f"{room}_{b:.2f}" 
@@ -191,7 +191,7 @@ def sync_image_analysis(user_id, message_id, limit):
             ]
         except Exception as e:
             logger.error(f"Logic Error: {e}")
-            return [TextMessage(text="系統繁忙，請稍後再試。")]
+            return [TextMessage(text=f"分析失敗: {str(e)}")]
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -225,7 +225,7 @@ def handle_message(event):
                 if len(parts) == 3:
                     level, target_uid = parts[1], parts[2]
                     supabase.table("members").update({"status": "approved", "member_level": level}).eq("line_user_id", target_uid).execute()
-                    line_api.push_message(PushMessageRequest(to=target_uid, messages=[TextMessage(text=f"🎉 您的帳號已核准開通！")]))
+                    line_api.push_message(PushMessageRequest(to=target_uid, messages=[TextMessage(text="🎉 您的帳號已核准開通！")]))
                     line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 已核准。")]))
                 return
 
