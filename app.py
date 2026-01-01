@@ -235,11 +235,13 @@ def handle_message(event):
             elif msg == "我要開通":
                 if user_data and user_data.get("status") == "approved":
                     line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 您的帳號早已開通。")]))
+                elif user_data and user_data.get("status") == "pending":
+                    line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"⏳ 您的申請正在審核中，請勿重複申請。\n您的 ID 為：\n{user_id}")]))
                 else:
                     supabase.table("members").upsert({"line_user_id": user_id, "status": "pending"}, on_conflict="line_user_id").execute()
                     if ADMIN_LINE_ID:
                         line_api.push_message(PushMessageRequest(to=ADMIN_LINE_ID, messages=[FlexMessage(alt_text="新申請", contents=FlexContainer.from_dict(get_admin_approve_flex(user_id)))]))
-                    line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 申請已送出，管理員 LINE:adong8989。")]))
+                    line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"✅ 申請已送出！\n\n您的 ID 為：\n{user_id}\n\n請截圖此畫面傳給管理員 LINE:adong8989。")]))
             else:
                 line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="🔮 賽特 AI 分析系統：請傳送截圖。", quick_reply=get_main_menu())]))
         
