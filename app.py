@@ -204,26 +204,61 @@ def handle_message(event):
         line_api = MessagingApi(api_client)
         is_admin = (user_id == ADMIN_LINE_ID)
         user_data = None
-        is_approved, limit = is_admin, 15
+        
+        # 預設基礎數值
+        base_limit = 15
+        extra_limit = 0
+        is_approved = is_admin
+
         try:
             m_res = supabase.table("members").select("*").eq("line_user_id", user_id).maybe_single().execute()
             if m_res and m_res.data:
                 user_data = m_res.data
                 if user_data.get("status") == "approved":
                     is_approved = True
-                    limit = 50 if user_data.get("member_level") == "vip" else 15
+                    # 根據會員等級判斷基礎額度
+                    base_limit = 50 if user_data.get("member_level") == "vip" else 15
+                    # 抓取資料庫中的額外額度欄位
+                    extra_limit = user_data.get("extra_limit", 0)
         except: pass
+
+        # 計算當前總額度
+        total_limit = base_limit + extra_limit
 
         if event.message.type == "text":
             msg = event.message.text.strip()
-            if is_admin and msg.startswith("#核准_"):
-                parts = msg.split("_")
-                if len(parts) == 3:
-                    level, target_uid = parts[1], parts[2]
-                    supabase.table("members").update({"status": "approved", "member_level": level}).eq("line_user_id", target_uid).execute()
-                    line_api.push_message(PushMessageRequest(to=target_uid, messages=[TextMessage(text="🎉 您的帳號已核准開通！")]))
-                    line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 已核准。")]))
-                return
+            
+            # --- 管理員專用指令 ---
+            if is_admin:
+                # 1. 原有的核准指令
+                if msg.startswith("#核准_"):
+                    parts = msg.split("_")
+                    if len(parts) == 3:
+                        level, target_uid = parts[1], parts[2]
+                        supabase.table("members").update({"status": "approved", "member_level": level}).eq("line_user_id", target_uid).execute()
+                        line_api.push_message(PushMessageRequest(to=target_uid, messages=[TextMessage(text="🎉 您的帳號已核准開通！")]))
+                        line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 已核准。")]))
+                    return
+
+                # 2. 新增的加額度指令: #加次數_10_UID
+                if msg.startswith("#加次數_"):
+                    parts = msg.split("_")
+                    if len(parts) == 3:
+                        try:
+                            add_val = int(parts[1])
+                            target_uid = parts[2]
+                            # 先取得該用戶目前的額外額度並累加
+                            current_m = supabase.table("members").select("extra_limit").eq("line_user_id", target_uid).maybe_single().execute()
+                            new_extra = (current_m.data.get("extra_limit", 0) if current_m.data else 0) + add_val
+                            
+                            supabase.table("members").update({"extra_limit": new_extra}).eq("line_user_id", target_uid).execute()
+                            
+                            line_api.push_message(PushMessageRequest(to=target_uid, messages=[TextMessage(text=f"🎁 管理員已為您增加 {add_val} 次臨時額度！")]))
+                            line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"✅ 已成功為用戶增加 {add_val} 次額度。\n該用戶目前額外總計：{new_extra}")]))
+                        except Exception as e:
+                            line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"❌ 指令執行失敗: {e}")]))
+                    return
+            # --- 指令區結束 ---
 
             if msg == "熱門戰報":
                 report = get_trending_report()
@@ -231,7 +266,8 @@ def handle_message(event):
             elif msg == "我的額度":
                 today_str = get_tz_now().strftime('%Y-%m-%d')
                 count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
-                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"📊 今日使用：{count_res.count or 0} / {limit}", quick_reply=get_main_menu())]))
+                # 顯示詳細額度構成
+                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"📊 今日使用：{count_res.count or 0} / {total_limit}\n(基礎: {base_limit} + 額外: {extra_limit})", quick_reply=get_main_menu())]))
             elif msg == "我要開通":
                 if user_data and user_data.get("status") == "approved":
                     line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 您的帳號早已開通。")]))
@@ -248,7 +284,8 @@ def handle_message(event):
         elif event.message.type == "image":
             if not is_approved:
                 return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 請先申請開通管理員 LINE:adong8989。")]))
-            result_messages = sync_image_analysis(user_id, event.message.id, limit)
+            # 傳入包含加乘後的 total_limit 進行分析
+            result_messages = sync_image_analysis(user_id, event.message.id, total_limit)
             line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=result_messages))
 
 if __name__ == "__main__":
