@@ -81,7 +81,7 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     else:
         base_color = "#00C853"; label = "✅ 低風險 / 數據優良"; risk_percent = "30%"
     
-    all_items = [("眼睛", 6), ("弓箭", 6), ("權杖蛇", 6), ("彎刀", 6), ("紅寶石", 6), ("藍寶石", 6), ("聖甲蟲", 3)]
+    all_items = [("眼睛", 6), ("弓箭", 6), ("權杖蛇", 6), ("彎刀", 6), ("紅寶石", 6), ("藍寶石", 6), ("綠寶石", 6), ("黃寶石", 6), ("紫寶石", 6), ("聖甲蟲", 3)]
     selected_items = random.sample(all_items, 2)
     combo = "、".join([f"{name}{random.randint(1, limit)}顆" for name, limit in selected_items])
     current_tip = random.choice([f"觀測到「{combo}」組合時，即將進入噴發期。", f"盤面出現「{combo}」，建議適度調高下注。"])
