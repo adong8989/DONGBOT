@@ -137,7 +137,7 @@ def get_trending_report():
     except Exception as e:
         logger.error(f"Report Error: {e}"); return f"戰報生成錯誤: {str(e)}"
 
-def sync_image_analysis(user_id, message_id, limit):
+def sync_image_analysis(user_id, message_id, base_limit):
     with ApiClient(configuration) as api_client:
         blob_api = MessagingApiBlob(api_client)
         try:
@@ -174,36 +174,47 @@ def sync_image_analysis(user_id, message_id, limit):
             if dup_check.data:
                 return [TextMessage(text="⚠️ 此截圖已分析過，請勿重複傳送以免浪費額度。", quick_reply=get_main_menu())]
 
+            # --- 額度消耗邏輯：優先扣除額外點數 ---
+            m_res = supabase.table("members").select("extra_limit").eq("line_user_id", user_id).maybe_single().execute()
+            current_extra = m_res.data.get("extra_limit", 0) if m_res and m_res.data else 0
+            
+            is_extra_use = False
+            if current_extra > 0:
+                current_extra -= 1
+                supabase.table("members").update({"extra_limit": current_extra}).eq("line_user_id", user_id).execute()
+                is_extra_use = True
+
+            # 儲存紀錄 (不論是否扣額外都記錄，用來顯示趨勢)
+            supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "rtp_value": r, "room_id": room, "data_hash": data_hash}).execute()
+
+            # 趨勢計算
             trend_text, trend_color = "🆕 今日首次分析", "#AAAAAA"
             try:
-                last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", desc=True).limit(1).execute()
-                if last_record.data:
-                    diff = r - float(last_record.data[0]['rtp_value'])
+                last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", desc=True).limit(2).execute()
+                if len(last_record.data) > 1:
+                    diff = r - float(last_record.data[1]['rtp_value'])
                     if diff > 0.01: trend_text, trend_color = f"🔥 趨勢升溫 (+{diff:.2f}%)", "#D50000"
                     elif diff < -0.01: trend_text, trend_color = f"❄️ 數據冷卻 ({diff:.2f}%)", "#1976D2"
                     else: trend_text, trend_color = "➡️ 數據平穩", "#555555"
             except: pass
 
-            # 儲存紀錄
-            supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "rtp_value": r, "room_id": room, "data_hash": data_hash}).execute()
-            
-            # --- 消耗性額外額度扣除邏輯 (修正版) ---
-            try:
-                m_res = supabase.table("members").select("extra_limit").eq("line_user_id", user_id).maybe_single().execute()
-                if m_res.data and m_res.data.get("extra_limit", 0) > 0:
-                    new_extra = m_res.data["extra_limit"] - 1
-                    supabase.table("members").update({"extra_limit": new_extra}).eq("line_user_id", user_id).execute()
-                    # 注意：這裡不手動改 limit 變數，維持原分母
-            except Exception as e:
-                logger.error(f"Deduct Error: {e}")
-
+            # 計算顯示剩餘額度
+            # 統計今天「非額外扣除」的使用次數
+            # 這裡簡單處理：如果是額外扣除，這一次分析不計入今日基礎 15 次的消耗
             count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
-            used_count = count_res.count or 0
-            remaining = limit - used_count # 精確計算：原總額度 - (原已用 + 剛才那次)
+            total_used_today = count_res.count or 0
             
+            # 若剛剛是用額外點數，那今天基礎消耗次數就是 (總次數 - 1)
+            # 但為了簡單直觀，我們直接顯示：
+            # 剩餘基礎 = base_limit - (今天總次數 - 剛剛用掉的點數)
+            effective_base_used = total_used_today - 1 if is_extra_use else total_used_today
+            remain_base = max(0, base_limit - effective_base_used)
+            
+            total_remaining = remain_base + current_extra
+
             return [
                 FlexMessage(alt_text="賽特 AI 分析", contents=FlexContainer.from_dict(get_flex_card(room, n, r, b, trend_text, trend_color, data_hash))),
-                TextMessage(text=f"📊 今日剩餘額度：{remaining} / {limit}", quick_reply=get_main_menu())
+                TextMessage(text=f"📊 剩餘總額度：{total_remaining} 次\n(每日基礎：{remain_base} + 額外點數：{current_extra})", quick_reply=get_main_menu())
             ]
         except Exception as e:
             logger.error(f"Logic Error: {e}"); return [TextMessage(text=f"分析失敗: {str(e)}")]
@@ -264,7 +275,9 @@ def handle_message(event):
             elif msg == "我的額度":
                 today_str = get_tz_now().strftime('%Y-%m-%d')
                 count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
-                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"📊 今日使用：{count_res.count or 0} / {total_limit}\n(基礎: {base_limit} + 額外: {extra_limit})", quick_reply=get_main_menu())]))
+                used_today = count_res.count or 0
+                remain_total = max(0, total_limit - used_today)
+                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=f"📊 剩餘總額度：{remain_total} 次\n(基礎: {base_limit} + 額外: {extra_limit})", quick_reply=get_main_menu())]))
             elif msg == "我要開通":
                 if user_data and user_data.get("status") == "approved":
                     line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="✅ 您的帳號已開通。")]))
@@ -280,7 +293,10 @@ def handle_message(event):
         elif event.message.type == "image":
             if not is_approved:
                 return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 請先申請開通管理員 LINE:adong8989。")]))
-            line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=sync_image_analysis(user_id, event.message.id, total_limit)))
+            
+            # 執行分析並立即回覆，減少 reply_token 失效機率
+            result_messages = sync_image_analysis(user_id, event.message.id, base_limit)
+            line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=result_messages))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
