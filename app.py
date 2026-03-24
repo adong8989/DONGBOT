@@ -4,7 +4,7 @@ import logging
 import re
 import random
 import json
-import requests  # 新增：用於 OCR.space API 請求
+import requests  # 用於 OCR.space API 請求
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from flask import Flask, request, abort
@@ -30,7 +30,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY") # 改用 OCR.space Key
+OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY") 
 ADMIN_LINE_ID = os.getenv("ADMIN_LINE_ID")
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
@@ -38,7 +38,8 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # === 工具函數 ===
-def get_tz_now(): return datetime.now(timezone(timedelta(hours=8)))
+def get_tz_now(): 
+    return datetime.now(timezone(timedelta(hours=8)))
 
 def get_main_menu():
     return QuickReply(items=[
@@ -122,7 +123,8 @@ def get_trending_report():
             report_text += f"{medals[i]} 房號: {rid} | RTP: {rtp}%\n"
         return report_text + "\n💡 數據由全體用戶貢獻。"
     except Exception as e:
-        logger.error(f"Report Error: {e}"); return f"戰報生成錯誤: {str(e)}"
+        logger.error(f"Report Error: {e}")
+        return f"戰報生成錯誤: {str(e)}"
 
 def sync_image_analysis(user_id, message_id, base_limit):
     with ApiClient(configuration) as api_client:
@@ -131,13 +133,13 @@ def sync_image_analysis(user_id, message_id, base_limit):
             # 1. 取得圖片內容
             img_bytes = blob_api.get_message_content(message_id)
             
-            # 2. 呼叫 OCR.space API (取代原本的 Google Vision)
+            # 2. 呼叫 OCR.space API 
             payload = {
                 'apikey': OCR_SPACE_API_KEY,
-                'language': 'chs',
+                'language': 'cht',  # 更改為繁體中文，增強關鍵字辨識
                 'isOverlayRequired': False,
-                'scale': True,
-                'OCREngine': 2  # 引擎 2 辨識數字與簡潔排版效果較佳
+                'scale': True,      # 放大圖片以利小數字辨識
+                'OCREngine': 2      # 引擎 2 對數字與表格效果較佳
             }
             files = {'filename': ('image.jpg', img_bytes, 'image/jpeg')}
             ocr_res = requests.post('https://api.ocr.space/parse/image', files=files, data=payload, timeout=15)
@@ -151,27 +153,62 @@ def sync_image_analysis(user_id, message_id, base_limit):
 
             lines = [l.strip() for l in txt.split('\n') if l.strip()]
             
-            # 3. 數據解析邏輯 (保留您原有的 Regex)
+            # 3. 數據解析邏輯優化：錨定關鍵字，避免抓到背景雜訊
             room = "未知"
-            for line in reversed(lines):
-                if re.fullmatch(r"\d{3,4}", line): room = line; break
-
-            r, b = 0.0, 0.0
-            for i, line in enumerate(lines):
-                if "今日" in line or "今" in line:
-                    scope = " ".join(lines[i:i+8])
-                    rtp_m = re.findall(r"(\d+\.\d+)\s*%", scope)
-                    if rtp_m: r = float(rtp_m[0])
-                    amt_m = re.findall(r"(\d{1,3}(?:,\d{3})*(?:\.\d{2}))", scope)
-                    for val in amt_m:
-                        cv = float(val.replace(',', ''))
-                        if cv != r: b = cv; break
-                    break
-
             n = 0
+            r, b = 0.0, 0.0
+
+            # (1) 找未開轉數
             n_m = re.search(r"未開\s*(\d+)", txt)
             if n_m: n = int(n_m.group(1))
-            if r <= 0: return [TextMessage(text="❓ 辨識失敗，請確保數據區清晰。")]
+
+            # (2) 找房號：改用「機台」關鍵字定位
+            for i, line in enumerate(lines):
+                if "機台" in line:
+                    room_m = re.search(r"(\d{3,4})", line)
+                    if room_m:
+                        room = room_m.group(1)
+                        break
+                    elif i > 0:
+                        room_prev = re.search(r"(\d{3,4})", lines[i-1])
+                        if room_prev:
+                            room = room_prev.group(1)
+                            break
+            
+            if room == "未知":
+                fallback_room = re.search(r"(\d{3,4})\s*機台", txt)
+                if fallback_room: room = fallback_room.group(1)
+
+            # (3) 找下注額與 RTP：鎖定「總下注額」與「得分率」
+            for i, line in enumerate(lines):
+                if b == 0.0 and ("總下注" in line or "下注額" in line):
+                    for j in range(i, min(i+8, len(lines))):
+                        amt_m = re.search(r"(\d{1,3}(?:,\d{3})*(?:\.\d{2}))", lines[j])
+                        if amt_m:
+                            b = float(amt_m.group(1).replace(',', ''))
+                            break
+                            
+                if r == 0.0 and "得分率" in line:
+                    for j in range(i, min(i+8, len(lines))):
+                        rtp_m = re.search(r"(\d+\.\d+)\s*%", lines[j])
+                        if rtp_m:
+                            r = float(rtp_m.group(1))
+                            break
+
+            # (4) 備用方案：若排版被打散，退回用「今日」定位
+            if b == 0.0 or r == 0.0:
+                for i, line in enumerate(lines):
+                    if "今日" in line or "今" in line:
+                        scope = " ".join(lines[i:i+15])
+                        if b == 0.0:
+                            amt_m = re.findall(r"(\d{1,3}(?:,\d{3})*(?:\.\d{2}))", scope)
+                            if amt_m: b = float(amt_m[0].replace(',', ''))
+                        if r == 0.0:
+                            rtp_m = re.findall(r"(\d+\.\d+)\s*%", scope)
+                            if rtp_m: r = float(rtp_m[0])
+                        break
+
+            if r <= 0: return [TextMessage(text="❓ 辨識失敗，請確保彈出視窗數據清晰無遮擋。")]
 
             today_str = get_tz_now().strftime('%Y-%m-%d')
             data_hash = f"{room}_{b:.2f}" 
@@ -180,7 +217,7 @@ def sync_image_analysis(user_id, message_id, base_limit):
             if dup_check.data:
                 return [TextMessage(text="⚠️ 此截圖已分析過，請勿重複傳送以免浪費額度。", quick_reply=get_main_menu())]
 
-            # 4. 額度消耗邏輯：優先扣除額外點數 (保留前一版優化)
+            # 4. 額度消耗邏輯
             m_res = supabase.table("members").select("extra_limit").eq("line_user_id", user_id).maybe_single().execute()
             current_extra = m_res.data.get("extra_limit", 0) if m_res and m_res.data else 0
             
@@ -190,7 +227,7 @@ def sync_image_analysis(user_id, message_id, base_limit):
                 supabase.table("members").update({"extra_limit": current_extra}).eq("line_user_id", user_id).execute()
                 is_extra_use = True
 
-            # 儲存紀錄 (不論是否扣額外都記錄，用來顯示趨勢)
+            # 儲存紀錄
             supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "rtp_value": r, "room_id": room, "data_hash": data_hash}).execute()
 
             # 5. 趨勢計算
@@ -216,7 +253,8 @@ def sync_image_analysis(user_id, message_id, base_limit):
                 TextMessage(text=f"📊 剩餘總額度：{total_remaining} 次\n(每日基礎：{remain_base} + 額外點數：{current_extra})", quick_reply=get_main_menu())
             ]
         except Exception as e:
-            logger.error(f"Logic Error: {e}"); return [TextMessage(text=f"分析失敗: {str(e)}")]
+            logger.error(f"Logic Error: {e}")
+            return [TextMessage(text=f"分析失敗: {str(e)}")]
 
 @app.route("/callback", methods=["POST"])
 def callback():
