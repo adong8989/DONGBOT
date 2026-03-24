@@ -30,7 +30,8 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY") 
+# 修改處：支援多組金鑰 (以逗號分隔)
+OCR_KEYS = [k.strip() for k in os.getenv("OCR_SPACE_API_KEY", "").split(",") if k.strip()]
 ADMIN_LINE_ID = os.getenv("ADMIN_LINE_ID")
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
@@ -133,36 +134,43 @@ def sync_image_analysis(user_id, message_id, base_limit):
             # 1. 取得圖片內容
             img_bytes = blob_api.get_message_content(message_id)
             
-            # 2. 呼叫 OCR.space API 
-            payload = {
-                'apikey': OCR_SPACE_API_KEY,
-                'language': 'cht',  # 更改為繁體中文，增強關鍵字辨識
-                'isOverlayRequired': False,
-                'scale': True,      # 放大圖片以利小數字辨識
-                'OCREngine': 2      # 引擎 2 對數字與表格效果較佳
-            }
-            files = {'filename': ('image.jpg', img_bytes, 'image/jpeg')}
-            ocr_res = requests.post('https://api.ocr.space/parse/image', files=files, data=payload, timeout=15)
-            ocr_result = ocr_res.json()
+            # 2. 呼叫 OCR.space API (加入多金鑰輪替邏輯)
+            txt = ""
+            success = False
+            for current_key in OCR_KEYS:
+                payload = {
+                    'apikey': current_key,
+                    'language': 'cht',
+                    'isOverlayRequired': False,
+                    'scale': True,
+                    'OCREngine': 2
+                }
+                files = {'filename': ('image.jpg', img_bytes, 'image/jpeg')}
+                try:
+                    ocr_res = requests.post('https://api.ocr.space/parse/image', files=files, data=payload, timeout=15)
+                    ocr_result = ocr_res.json()
+                    if ocr_result.get("OCRExitCode") == 1:
+                        txt = ocr_result["ParsedResults"][0]["ParsedText"]
+                        success = True
+                        break # 辨識成功，跳出金鑰輪替
+                    else:
+                        logger.warning(f"OCR Key Failed: {current_key[:5]}... Error: {ocr_result.get('ErrorMessage')}")
+                except Exception as e:
+                    logger.error(f"OCR Request Error with Key {current_key[:5]}: {e}")
             
-            if ocr_result.get("OCRExitCode") == 1:
-                txt = ocr_result["ParsedResults"][0]["ParsedText"]
-            else:
-                logger.error(f"OCR Error Detail: {ocr_result}")
+            if not success:
                 return [TextMessage(text="❌ 辨識服務暫時不可用，請稍後再試。")]
 
+            # --- 以下保留原始解析邏輯，完全不動 ---
             lines = [l.strip() for l in txt.split('\n') if l.strip()]
             
-            # 3. 數據解析邏輯優化：錨定關鍵字，避免抓到背景雜訊
             room = "未知"
             n = 0
             r, b = 0.0, 0.0
 
-            # (1) 找未開轉數
             n_m = re.search(r"未開\s*(\d+)", txt)
             if n_m: n = int(n_m.group(1))
 
-            # (2) 找房號：改用「機台」關鍵字定位
             for i, line in enumerate(lines):
                 if "機台" in line:
                     room_m = re.search(r"(\d{3,4})", line)
@@ -179,7 +187,6 @@ def sync_image_analysis(user_id, message_id, base_limit):
                 fallback_room = re.search(r"(\d{3,4})\s*機台", txt)
                 if fallback_room: room = fallback_room.group(1)
 
-            # (3) 找下注額與 RTP：鎖定「總下注額」與「得分率」
             for i, line in enumerate(lines):
                 if b == 0.0 and ("總下注" in line or "下注額" in line):
                     for j in range(i, min(i+8, len(lines))):
@@ -195,7 +202,6 @@ def sync_image_analysis(user_id, message_id, base_limit):
                             r = float(rtp_m.group(1))
                             break
 
-            # (4) 備用方案：若排版被打散，退回用「今日」定位
             if b == 0.0 or r == 0.0:
                 for i, line in enumerate(lines):
                     if "今日" in line or "今" in line:
@@ -217,7 +223,6 @@ def sync_image_analysis(user_id, message_id, base_limit):
             if dup_check.data:
                 return [TextMessage(text="⚠️ 此截圖已分析過，請勿重複傳送以免浪費額度。", quick_reply=get_main_menu())]
 
-            # 4. 額度消耗邏輯
             m_res = supabase.table("members").select("extra_limit").eq("line_user_id", user_id).maybe_single().execute()
             current_extra = m_res.data.get("extra_limit", 0) if m_res and m_res.data else 0
             
@@ -227,10 +232,8 @@ def sync_image_analysis(user_id, message_id, base_limit):
                 supabase.table("members").update({"extra_limit": current_extra}).eq("line_user_id", user_id).execute()
                 is_extra_use = True
 
-            # 儲存紀錄
             supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "rtp_value": r, "room_id": room, "data_hash": data_hash}).execute()
 
-            # 5. 趨勢計算
             trend_text, trend_color = "🆕 今日首次分析", "#AAAAAA"
             try:
                 last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", desc=True).limit(2).execute()
@@ -241,7 +244,6 @@ def sync_image_analysis(user_id, message_id, base_limit):
                     else: trend_text, trend_color = "➡️ 數據平穩", "#555555"
             except: pass
 
-            # 6. 計算顯示剩餘額度
             count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
             total_used_today = count_res.count or 0
             effective_base_used = total_used_today - 1 if is_extra_use else total_used_today
