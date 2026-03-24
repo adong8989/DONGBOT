@@ -1,5 +1,4 @@
 import os
-import tempfile
 import logging
 import re
 import random
@@ -18,7 +17,6 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import MessageEvent
 from linebot.v3.messaging.models import QuickReply, QuickReplyItem, MessageAction
 from linebot.v3.exceptions import InvalidSignatureError
-
 from google.oauth2 import service_account
 
 load_dotenv()
@@ -74,42 +72,23 @@ def get_admin_approve_flex(target_uid):
 
 def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     random.seed(seed_hash)
-    # 風險等級判定
     if n > 250 or r > 120:
-        base_color = "#D50000"; label = "🚨 高風險 / 建議換房"; risk_percent = "100%"
-        status = "high"
+        base_color = "#D50000"; label = "🚨 高風險 / 建議換房"; risk_percent = "100%"; status = "high"
     elif n > 150 or r > 110:
-        base_color = "#FFAB00"; label = "⚠️ 中風險 / 謹慎進場"; risk_percent = "60%"
-        status = "mid"
+        base_color = "#FFAB00"; label = "⚠️ 中風險 / 謹慎進場"; risk_percent = "60%"; status = "mid"
     else:
-        base_color = "#00C853"; label = "✅ 低風險 / 數據優良"; risk_percent = "30%"
-        status = "low"
+        base_color = "#00C853"; label = "✅ 低風險 / 數據優良"; risk_percent = "30%"; status = "low"
     
-    # 寶石與符號庫
-    all_items = [
-        ("眼睛", 6), ("弓箭", 6), ("權杖蛇", 6), ("彎刀", 6), 
-        ("紅寶石", 6), ("藍寶石", 6), ("綠寶石", 6), ("黃寶石", 6), ("紫寶石", 6), ("聖甲蟲", 3)
-    ]
+    all_items = [("眼睛", 6), ("弓箭", 6), ("權杖蛇", 6), ("彎刀", 6), ("紅寶石", 6), ("藍寶石", 6), ("綠寶石", 6), ("黃寶石", 6), ("紫寶石", 6), ("聖甲蟲", 3)]
     selected_items = random.sample(all_items, 2)
-    # 正確生成「XX顆」格式
     combo = "、".join([f"{name}{random.randint(1, limit)}顆" for name, limit in selected_items])
     
-    # 根據風險等級提供建議文字
     if status == "high":
-        tips = [
-            f"❌ 盤面較硬，雖然出現「{combo}」，但分布太散容易咬分，建議換房。",
-            f"⚠️ 偵測到回收訊號，目前「{combo}」組合氣場不足，請小心操作。"
-        ]
+        tips = [f"❌ 盤面較硬，雖然出現「{combo}」，但分布太散容易咬分，建議換房。", f"⚠️ 偵測到回收訊號，目前「{combo}」氣場不足，請小心操作。"]
     elif status == "mid":
-        tips = [
-            f"⚖️ 盤面拉鋸中，若看到「{combo}」頻繁出現，可以考慮小試幾轉。",
-            f"🔍 觀察中：目前「{combo}」頻率尚可，建議平注守好。"
-        ]
+        tips = [f"⚖️ 盤面拉鋸中，若看到「{combo}」頻繁出現，可以考慮小試幾轉。", f"🔍 觀察中：目前「{combo}」頻率尚可，建議平注守好。"]
     else:
-        tips = [
-            f"✅ 氣場極強！盤面出現「{combo}」組合，大噴發機率攀升。",
-            f"🔥 訊號亮起！出現「{combo}」帶動，大獎可能就在最近幾轉。"
-        ]
+        tips = [f"✅ 氣場極強！盤面出現「{combo}」組合，大噴發機率攀升。", f"🔥 訊號亮起！出現「{combo}」帶動，大獎可能就在最近幾轉。"]
     
     current_tip = random.choice(tips)
     random.seed(None)
@@ -154,21 +133,32 @@ def get_trending_report():
             report_text += f"{medals[i]} 房號: {rid} | RTP: {rtp}%\n"
         return report_text + "\n💡 數據由全體用戶貢獻。"
     except Exception as e:
-        logger.error(f"Report Error: {e}")
-        return f"戰報生成錯誤: {str(e)}"
+        logger.error(f"Report Error: {e}"); return f"戰報生成錯誤: {str(e)}"
 
-def sync_image_analysis(user_id, message_id, limit):
+def sync_image_analysis(user_id, message_id, base_limit):
     with ApiClient(configuration) as api_client:
         blob_api = MessagingApiBlob(api_client)
         try:
+            # 1. 取得圖片內容
             img_bytes = blob_api.get_message_content(message_id)
+            if vision_client is None:
+                return [TextMessage(text="❌ OCR 服務未啟動，請聯繫管理員。")]
+
+            # 2. 呼叫 OCR (Google Vision)
+            from google.cloud import vision
             res = vision_client.document_text_detection(image=vision.Image(content=img_bytes))
             txt = res.full_text_annotation.text if res.full_text_annotation else ""
             lines = [l.strip() for l in txt.split('\n') if l.strip()]
             
+            # 3. 數據解析 (房號修正邏輯)
             room = "未知"
-            for line in reversed(lines):
-                if re.fullmatch(r"\d{3,4}", line): room = line; break
+            for line in lines:
+                room_match = re.search(r"(\d{3,5})\s*機台", line)
+                if room_match: room = room_match.group(1); break
+            
+            if room == "未知":
+                for line in reversed(lines):
+                    if re.fullmatch(r"\d{3,5}", line): room = line; break
 
             r, b = 0.0, 0.0
             for i, line in enumerate(lines):
@@ -193,41 +183,47 @@ def sync_image_analysis(user_id, message_id, limit):
             # 重複檢查
             dup_check = supabase.table("usage_logs").select("id").eq("line_user_id", user_id).eq("used_at", today_str).eq("data_hash", data_hash).execute()
             if dup_check.data:
-                return [TextMessage(text="⚠️ 此截圖已分析過，請勿重複傳送以免浪費額度。", quick_reply=get_main_menu())]
+                return [TextMessage(text="⚠️ 此截圖已分析過，請勿重複傳送。", quick_reply=get_main_menu())]
 
+            # 4. 額度處理
+            current_extra = 0
+            try:
+                m_res = supabase.table("members").select("extra_limit").eq("line_user_id", user_id).maybe_single().execute()
+                if m_res and hasattr(m_res, 'data') and isinstance(m_res.data, dict):
+                    current_extra = m_res.data.get("extra_limit", 0)
+            except: pass
+            
+            is_extra_use = False
+            if current_extra > 0:
+                current_extra -= 1
+                supabase.table("members").update({"extra_limit": current_extra}).eq("line_user_id", user_id).execute()
+                is_extra_use = True
+
+            # 儲存紀錄
+            supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "rtp_value": r, "room_id": room, "data_hash": data_hash}).execute()
+
+            # 5. 趨勢與剩餘額度
             trend_text, trend_color = "🆕 今日首次分析", "#AAAAAA"
             try:
-                last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", desc=True).limit(1).execute()
-                if last_record.data:
-                    diff = r - float(last_record.data[0]['rtp_value'])
+                last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", desc=True).limit(2).execute()
+                if len(last_record.data) > 1:
+                    diff = r - float(last_record.data[1]['rtp_value'])
                     if diff > 0.01: trend_text, trend_color = f"🔥 趨勢升溫 (+{diff:.2f}%)", "#D50000"
                     elif diff < -0.01: trend_text, trend_color = f"❄️ 數據冷卻 ({diff:.2f}%)", "#1976D2"
                     else: trend_text, trend_color = "➡️ 數據平穩", "#555555"
             except: pass
 
-            # 寫入使用紀錄
-            supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "rtp_value": r, "room_id": room, "data_hash": data_hash}).execute()
-            
-            # --- 消耗性額外額度扣除邏輯 ---
-            try:
-                m_res = supabase.table("members").select("extra_limit").eq("line_user_id", user_id).maybe_single().execute()
-                if m_res.data and m_res.data.get("extra_limit", 0) > 0:
-                    new_extra = m_res.data["extra_limit"] - 1
-                    supabase.table("members").update({"extra_limit": new_extra}).eq("line_user_id", user_id).execute()
-                    limit = limit - 1 # 讓訊息顯示正確的剩餘次數
-            except Exception as e:
-                logger.error(f"Deduct Extra Limit Error: {e}")
-            # --- 結束 ---
-
             count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
-            
+            total_used_today = count_res.count or 0
+            effective_base_used = total_used_today - 1 if is_extra_use else total_used_today
+            remain_base = max(0, base_limit - effective_base_used)
+
             return [
                 FlexMessage(alt_text="賽特 AI 分析", contents=FlexContainer.from_dict(get_flex_card(room, n, r, b, trend_text, trend_color, data_hash))),
-                TextMessage(text=f"📊 今日剩餘額度：{limit - (count_res.count or 0)} / {limit}", quick_reply=get_main_menu())
+                TextMessage(text=f"📊 剩餘總額度：{remain_base + current_extra} 次\n(每日基礎：{remain_base} + 額外點數：{current_extra})", quick_reply=get_main_menu())
             ]
         except Exception as e:
-            logger.error(f"Logic Error: {e}")
-            return [TextMessage(text=f"分析失敗: {str(e)}")]
+            logger.error(f"Logic Error: {e}"); return [TextMessage(text=f"分析失敗: {str(e)}")]
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -240,6 +236,37 @@ def callback():
 @handler.add(MessageEvent)
 def handle_message(event):
     user_id = event.source.user_id
+    with ApiClient(configuration) as api_client:
+        line_api = MessagingApi(api_client)
+        is_admin = (user_id == ADMIN_LINE_ID)
+        user_data = None
+        base_limit = 15; extra_limit = 0; is_approved = is_admin
+
+        try:
+            m_res = supabase.table("members").select("*").eq("line_user_id", user_id).maybe_single().execute()
+            if m_res and m_res.data:
+                user_data = m_res.data
+                if user_data.get("status") == "approved":
+                    is_approved = True
+                    base_limit = 50 if user_data.get("member_level") == "vip" else 15
+                    extra_limit = user_data.get("extra_limit", 0)
+        except: pass
+
+        if event.message.type == "text":
+            msg = event.message.text.strip()
+            # ... (此處保留原有的熱門戰報、我的額度、核准等文字邏輯) ...
+            if msg == "熱門戰報":
+                line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=get_trending_report(), quick_reply=get_main_menu())]))
+            # (其餘文字邏輯略，請保留你原本的 handler 部分)
+
+        elif event.message.type == "image":
+            if not is_approved:
+                return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 請先申請開通管理員。")]))
+            result_messages = sync_image_analysis(user_id, event.message.id, base_limit)
+            line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=result_messages))
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))    user_id = event.source.user_id
     with ApiClient(configuration) as api_client:
         line_api = MessagingApi(api_client)
         is_admin = (user_id == ADMIN_LINE_ID)
