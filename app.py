@@ -1,9 +1,7 @@
 import os
-import tempfile
 import logging
 import re
 import random
-import json
 import requests
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
@@ -48,9 +46,6 @@ def get_main_menu():
         QuickReplyItem(action=MessageAction(label="🔓 我要開通", text="我要開通"))
     ])
 
-# (get_admin_approve_flex 與 get_flex_card 保持不變，節省篇幅省略...)
-# ... [請保留您原本代碼中的 get_admin_approve_flex 和 get_flex_card 函數內容] ...
-
 def get_admin_approve_flex(target_uid):
     return {
         "type": "bubble",
@@ -74,15 +69,15 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     all_items = [("眼睛", 6), ("弓箭", 6), ("權杖蛇", 6), ("彎刀", 6), ("紅寶石", 6), ("藍寶石", 6), ("綠寶石", 6), ("黃寶石", 6), ("紫寶石", 6), ("聖甲蟲", 3)]
     selected_items = random.sample(all_items, 2)
     combo = "、".join([f"{name}{random.randint(1, limit)}顆" for name, limit in selected_items])
-    if status == "high":
-        tips = [f"❌ 盤面較硬，雖然出現「{combo}」，但分布太散容易咬分，建議換房。", f"⚠️ 偵測到回收訊號，目前「{combo}」氣場不足，請小心操作。"]
-    elif status == "mid":
-        tips = [f"⚖️ 盤面拉鋸中，若看到「{combo}」頻繁出現，可以考慮小試幾轉。", f"🔍 觀察中：目前「{combo}」頻率尚可，建議平注守好。"]
-    else:
-        tips = [f"✅ 氣場極強！盤面出現「{combo}」組合，大噴發機率攀升。", f"🔥 訊號亮起！出現「{combo}」帶動，大獎可能就在最近幾轉。"]
     
-    current_tip = random.choice(tips)
+    tips = {
+        "high": [f"❌ 盤面較硬，雖然出現「{combo}」，但分布太散容易咬分，建議換房。", f"⚠️ 偵測到回收訊號，目前「{combo}」氣場不足，請小心操作。"],
+        "mid": [f"⚖️ 盤面拉鋸中，若看到「{combo}」頻繁出現，可以考慮小試幾轉。", f"🔍 觀察中：目前「{combo}」頻率尚可，建議平注守好。"],
+        "low": [f"✅ 氣場極強！盤面出現「{combo}」組合，大噴發機率攀升。", f"🔥 訊號亮起！出現「{combo}」帶動，大獎可能就在最近幾轉。"]
+    }
+    current_tip = random.choice(tips[status])
     random.seed(None)
+    
     return {
         "type": "bubble",
         "header": {"type": "box", "layout": "vertical", "contents": [{"type": "text", "text": f"賽特 {room} 房 趨勢分析", "color": "#FFFFFF", "weight": "bold"}], "backgroundColor": base_color},
@@ -125,59 +120,63 @@ def get_trending_report():
     except Exception as e:
         logger.error(f"Report Error: {e}"); return f"戰報生成錯誤: {str(e)}"
 
-# === 強化版分析函數 ===
+# === 核心解析函數 (對應圖片排版優化版) ===
 def sync_image_analysis(user_id, message_id, base_limit):
     with ApiClient(configuration) as api_client:
         blob_api = MessagingApiBlob(api_client)
         try:
             img_bytes = blob_api.get_message_content(message_id)
-            payload = {'apikey': OCR_SPACE_API_KEY, 'language': 'chs', 'isOverlayRequired': False, 'scale': True, 'isTable': True, 'OCREngine': 2}
+            payload = {'apikey': OCR_SPACE_API_KEY, 'language': 'chs', 'scale': True, 'OCREngine': 2}
             files = {'filename': ('image.jpg', img_bytes, 'image/jpeg')}
             ocr_res = requests.post('https://api.ocr.space/parse/image', files=files, data=payload, timeout=15)
             ocr_result = ocr_res.json()
             
             if ocr_result.get("OCRExitCode") != 1:
-                return [TextMessage(text="❌ 辨識服務異常，請稍後再試。")]
+                return [TextMessage(text="❌ OCR 服務異常，請稍後再試。")]
 
-            full_text = ocr_result["ParsedResults"][0]["ParsedText"]
-            clean_text = full_text.replace(" ", "").replace(",", "")
-            lines = [l.strip() for l in full_text.split('\n') if l.strip()]
-
-            # 1. 抓取房號 (強化邏輯：找 3~4 位純數字，且排除 RTP 常用數字)
-            room = "未知"
-            # 優先從最後一行往前找，因為房號通常在下方
-            all_numbers = re.findall(r"\d{3,4}", clean_text)
-            if all_numbers:
-                # 排除掉可能被讀成 RTP 的部分（通常 RTP 會有小數點，這裡找純整數）
-                # 取最後一個符合的 3-4 位數作為房號
-                room = all_numbers[-1]
-
-            # 2. 抓取 RTP 與 下注額 (處理空格斷開問題)
-            r, b = 0.0, 0.0
-            rtp_m = re.findall(r"(\d+\.\d+)%", clean_text)
-            if rtp_m: r = float(rtp_m[0])
+            parsed_text = ocr_result["ParsedResults"][0]["ParsedText"]
+            lines = [l.strip() for l in parsed_text.split('\n') if l.strip()]
             
-            amt_m = re.findall(r"(\d+\.\d{2})", clean_text)
-            for val in amt_m:
-                cv = float(val)
-                if cv != r: b = cv; break
+            r, b, room, n = 0.0, 0.0, "未知", 0
 
-            # 3. 未開轉數
-            n = 0
-            n_m = re.search(r"未開(\d+)", clean_text)
-            if n_m: n = int(n_m.group(1))
+            # 1. 抓取未開轉數
+            n_match = re.search(r"未開\s*(\d+)", parsed_text.replace(" ", ""))
+            if n_match: n = int(n_match.group(1))
 
-            if r <= 0: return [TextMessage(text="❓ 辨識失敗，請確保數據區清晰。")]
+            # 2. 抓取機台房號 (定位 "機台" 關鍵字)
+            room_match = re.search(r"(\d{3,4})\s*機台", parsed_text)
+            if room_match:
+                room = room_match.group(1)
+            else:
+                # 備援：找獨立數字
+                candidates = re.findall(r"\b\d{3,4}\b", parsed_text)
+                if candidates: room = candidates[0]
 
+            # 3. 抓取 今日 RTP 與 下注額
+            for line in lines:
+                if "今日" in line:
+                    clean_line = line.replace(",", "")
+                    # 找 RTP
+                    rtp_search = re.search(r"(\d+\.?\d*)%", clean_line)
+                    if rtp_search: r = float(rtp_search.group(1))
+                    # 找金額 (下注額)
+                    amounts = re.findall(r"(\d+\.\d{2})", clean_line)
+                    for amt in amounts:
+                        val = float(amt)
+                        if val != r: b = val; break
+                    break
+
+            if r <= 0:
+                return [TextMessage(text="❓ 辨識失敗，請確保數據區（今日得分率）清晰。")]
+
+            # 4. 額度邏輯與重複檢查
             today_str = get_tz_now().strftime('%Y-%m-%d')
-            data_hash = f"{room}_{b:.2f}" 
+            data_hash = f"{room}_{b:.2f}"
             
-            # 重複檢查
             dup_check = supabase.table("usage_logs").select("id").eq("line_user_id", user_id).eq("used_at", today_str).eq("data_hash", data_hash).execute()
             if dup_check.data:
                 return [TextMessage(text="⚠️ 此截圖已分析過，請勿重複傳送。", quick_reply=get_main_menu())]
 
-            # 額度消耗邏輯
             m_res = supabase.table("members").select("extra_limit").eq("line_user_id", user_id).maybe_single().execute()
             current_extra = m_res.data.get("extra_limit", 0) if m_res and m_res.data else 0
             
@@ -187,24 +186,24 @@ def sync_image_analysis(user_id, message_id, base_limit):
                 supabase.table("members").update({"extra_limit": current_extra}).eq("line_user_id", user_id).execute()
                 is_extra_use = True
 
-            # 儲存紀錄 (加入 is_extra 標記)
+            # 儲存紀錄 (標記 is_extra)
             supabase.table("usage_logs").insert({
                 "line_user_id": user_id, "used_at": today_str, "rtp_value": r, 
                 "room_id": room, "data_hash": data_hash, "is_extra": is_extra_use
             }).execute()
 
-            # 趨勢與計算剩餘
+            # 趨勢計算
             trend_text, trend_color = "🆕 今日首次分析", "#AAAAAA"
             try:
-                last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", desc=True).limit(2).execute()
-                if len(last_record.data) > 1:
-                    diff = r - float(last_record.data[1]['rtp_value'])
+                last_rec = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", desc=True).limit(2).execute()
+                if len(last_rec.data) > 1:
+                    diff = r - float(last_rec.data[1]['rtp_value'])
                     if diff > 0.01: trend_text, trend_color = f"🔥 趨勢升溫 (+{diff:.2f}%)", "#D50000"
                     elif diff < -0.01: trend_text, trend_color = f"❄️ 數據冷卻 ({diff:.2f}%)", "#1976D2"
                     else: trend_text, trend_color = "➡️ 數據平穩", "#555555"
             except: pass
 
-            # 精準統計基礎額度
+            # 統計基礎額度
             base_count = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).eq("is_extra", False).execute()
             used_base = base_count.count or 0
             remain_base = max(0, base_limit - used_base)
@@ -217,7 +216,7 @@ def sync_image_analysis(user_id, message_id, base_limit):
         except Exception as e:
             logger.error(f"Logic Error: {e}"); return [TextMessage(text=f"分析失敗: {str(e)}")]
 
-# === Callback & Handler (修正我的額度查詢) ===
+# === Callback & Handler ===
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
@@ -246,7 +245,6 @@ def handle_message(event):
 
         if event.message.type == "text":
             msg = event.message.text.strip()
-            # (管理員核准邏輯保持不變...)
             if is_admin:
                 if msg.startswith("#核准_"):
                     p = msg.split("_")
@@ -271,7 +269,6 @@ def handle_message(event):
                 line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=get_trending_report(), quick_reply=get_main_menu())]))
             elif msg == "我的額度":
                 today_str = get_tz_now().strftime('%Y-%m-%d')
-                # 修正：只查詢非額外點數的紀錄
                 count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).eq("is_extra", False).execute()
                 used_base = count_res.count or 0
                 extra_limit = user_data.get("extra_limit", 0) if user_data else 0
