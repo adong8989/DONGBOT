@@ -4,6 +4,7 @@ import logging
 import re
 import random
 import json
+import requests  # 新增：用於 OCR.space API 請求
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from flask import Flask, request, abort
@@ -19,8 +20,6 @@ from linebot.v3.webhooks import MessageEvent
 from linebot.v3.messaging.models import QuickReply, QuickReplyItem, MessageAction
 from linebot.v3.exceptions import InvalidSignatureError
 
-from google.oauth2 import service_account
-
 load_dotenv()
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -31,24 +30,12 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-GCP_SA_KEY_JSON = os.getenv("GCP_SA_KEY_JSON")
+OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY") # 改用 OCR.space Key
 ADMIN_LINE_ID = os.getenv("ADMIN_LINE_ID")
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# === Vision Client 初始化 ===
-vision_client = None
-if GCP_SA_KEY_JSON:
-    try:
-        from google.cloud import vision
-        key_dict = json.loads(GCP_SA_KEY_JSON)
-        creds = service_account.Credentials.from_service_account_info(key_dict)
-        vision_client = vision.ImageAnnotatorClient(credentials=creds)
-        logger.info("✅ Google Vision Client 啟動成功")
-    except Exception as e:
-        logger.error(f"❌ Vision Client 啟動失敗: {e}")
 
 # === 工具函數 ===
 def get_tz_now(): return datetime.now(timezone(timedelta(hours=8)))
@@ -141,11 +128,30 @@ def sync_image_analysis(user_id, message_id, base_limit):
     with ApiClient(configuration) as api_client:
         blob_api = MessagingApiBlob(api_client)
         try:
+            # 1. 取得圖片內容
             img_bytes = blob_api.get_message_content(message_id)
-            res = vision_client.document_text_detection(image=vision.Image(content=img_bytes))
-            txt = res.full_text_annotation.text if res.full_text_annotation else ""
+            
+            # 2. 呼叫 OCR.space API (取代原本的 Google Vision)
+            payload = {
+                'apikey': OCR_SPACE_API_KEY,
+                'language': 'chs',
+                'isOverlayRequired': False,
+                'scale': True,
+                'OCREngine': 2  # 引擎 2 辨識數字與簡潔排版效果較佳
+            }
+            files = {'filename': ('image.jpg', img_bytes, 'image/jpeg')}
+            ocr_res = requests.post('https://api.ocr.space/parse/image', files=files, data=payload, timeout=15)
+            ocr_result = ocr_res.json()
+            
+            if ocr_result.get("OCRExitCode") == 1:
+                txt = ocr_result["ParsedResults"][0]["ParsedText"]
+            else:
+                logger.error(f"OCR Error Detail: {ocr_result}")
+                return [TextMessage(text="❌ 辨識服務暫時不可用，請稍後再試。")]
+
             lines = [l.strip() for l in txt.split('\n') if l.strip()]
             
+            # 3. 數據解析邏輯 (保留您原有的 Regex)
             room = "未知"
             for line in reversed(lines):
                 if re.fullmatch(r"\d{3,4}", line): room = line; break
@@ -174,7 +180,7 @@ def sync_image_analysis(user_id, message_id, base_limit):
             if dup_check.data:
                 return [TextMessage(text="⚠️ 此截圖已分析過，請勿重複傳送以免浪費額度。", quick_reply=get_main_menu())]
 
-            # --- 額度消耗邏輯：優先扣除額外點數 ---
+            # 4. 額度消耗邏輯：優先扣除額外點數 (保留前一版優化)
             m_res = supabase.table("members").select("extra_limit").eq("line_user_id", user_id).maybe_single().execute()
             current_extra = m_res.data.get("extra_limit", 0) if m_res and m_res.data else 0
             
@@ -187,7 +193,7 @@ def sync_image_analysis(user_id, message_id, base_limit):
             # 儲存紀錄 (不論是否扣額外都記錄，用來顯示趨勢)
             supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "rtp_value": r, "room_id": room, "data_hash": data_hash}).execute()
 
-            # 趨勢計算
+            # 5. 趨勢計算
             trend_text, trend_color = "🆕 今日首次分析", "#AAAAAA"
             try:
                 last_record = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", desc=True).limit(2).execute()
@@ -198,18 +204,11 @@ def sync_image_analysis(user_id, message_id, base_limit):
                     else: trend_text, trend_color = "➡️ 數據平穩", "#555555"
             except: pass
 
-            # 計算顯示剩餘額度
-            # 統計今天「非額外扣除」的使用次數
-            # 這裡簡單處理：如果是額外扣除，這一次分析不計入今日基礎 15 次的消耗
+            # 6. 計算顯示剩餘額度
             count_res = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute()
             total_used_today = count_res.count or 0
-            
-            # 若剛剛是用額外點數，那今天基礎消耗次數就是 (總次數 - 1)
-            # 但為了簡單直觀，我們直接顯示：
-            # 剩餘基礎 = base_limit - (今天總次數 - 剛剛用掉的點數)
             effective_base_used = total_used_today - 1 if is_extra_use else total_used_today
             remain_base = max(0, base_limit - effective_base_used)
-            
             total_remaining = remain_base + current_extra
 
             return [
@@ -294,7 +293,6 @@ def handle_message(event):
             if not is_approved:
                 return line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 請先申請開通管理員 LINE:adong8989。")]))
             
-            # 執行分析並立即回覆，減少 reply_token 失效機率
             result_messages = sync_image_analysis(user_id, event.message.id, base_limit)
             line_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=result_messages))
 
