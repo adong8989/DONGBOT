@@ -57,11 +57,11 @@ def get_admin_approve_flex(target_uid):
         ]}
     }
 
-# === 精準解析邏輯 (New!) ===
+# === 強化後的 OCR 解析邏輯 ===
 def extract_today_block(text):
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     for i, line in enumerate(lines):
-        if "今日" in line:
+        if "今日" in line or "今" in line:
             block = " ".join(lines[i:i+8])
             if "近30天" in block: block = block.split("近30天")[0]
             return block
@@ -69,30 +69,38 @@ def extract_today_block(text):
 
 def parse_ocr_refined(text):
     block = extract_today_block(text)
-    # 房號辨識
+    
+    # 1. 房號辨識 (優先抓「機台」前面的數字)
     room = "未知"
-    m = re.search(r"(\d{3,5})\s*機台", text)
-    if m: room = m.group(1)
+    m = re.search(r"(\d{3,5})\s*(?:機台|機台號|機)", text)
+    if m: 
+        room = m.group(1)
     else:
         nums = re.findall(r"\b\d{4}\b", text)
         if nums: room = nums[-1]
 
-    # RTP 辨識 (過濾合理區間)
+    # 2. RTP 辨識 (強化：不強制依賴 % 符號，容錯點號辨識)
     rtp = 0.0
-    rtp_candidates = re.findall(r"(\d{2,3}\.\d+)\s*%", block)
+    rtp_candidates = re.findall(r"(\d{2,3}\.\d+)(?:\s*%?)", block)
     for val in rtp_candidates:
         v = float(val)
-        if 70 <= v <= 200:
+        if 50 <= v <= 300: # 合理的 RTP 範圍
             rtp = v
             break
 
-    # 今日下注金額
+    # 3. 今日下注金額 (強化：排除已辨識為 RTP 的數字)
     bet = 0.0
-    nums = re.findall(r"([\d,]+\.\d{2})", block)
-    clean_nums = [float(n.replace(",", "")) for n in nums if 1000 < float(n.replace(",", "")) < 10000000]
-    if clean_nums: bet = min(clean_nums)
+    nums_with_decimal = re.findall(r"([\d,]+\.\d{2})", block)
+    clean_nums = []
+    for n in nums_with_decimal:
+        v = float(n.replace(",", ""))
+        if abs(v - rtp) > 1.0 and 100 < v < 20000000: # 避開與 RTP 重疊的數字
+            clean_nums.append(v)
+    
+    if clean_nums: 
+        bet = min(clean_nums) # 今日下注通常是區塊中較小的那個(相對於累積)
 
-    # 未開轉數
+    # 4. 未開轉數
     spins = 0
     m_s = re.search(r"未開\s*(\d+)", text)
     if m_s: spins = int(m_s.group(1))
@@ -102,21 +110,22 @@ def parse_ocr_refined(text):
 # === 視覺美化卡片 ===
 def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
     random.seed(seed_hash)
+    # 風險判斷邏輯
     if n > 250 or r > 120:
-        base_color, label, risk_percent, status = "#D50000", "🚨 高風險 / 建議換房", "100%", "high"
+        base_color, label, risk_p, status = "#D50000", "🚨 高風險 / 建議換房", "100%", "high"
     elif n > 150 or r > 110:
-        base_color, label, risk_percent, status = "#FFAB00", "⚠️ 中風險 / 謹慎進場", "60%", "mid"
+        base_color, label, risk_p, status = "#FFAB00", "⚠️ 中風險 / 謹慎進場", "60%", "mid"
     else:
-        base_color, label, risk_percent, status = "#00C853", "✅ 低風險 / 數據優良", "30%", "low"
+        base_color, label, risk_p, status = "#00C853", "✅ 低風險 / 數據優良", "30%", "low"
     
     all_items = [("眼睛", 6), ("弓箭", 6), ("權杖蛇", 6), ("彎刀", 6), ("紅寶石", 6), ("藍寶石", 6), ("綠寶石", 6), ("黃寶石", 6), ("紫寶石", 6), ("聖甲蟲", 3)]
-    selected_items = random.sample(all_items, 2)
-    combo = "、".join([f"{name}{random.randint(1, limit)}顆" for name, limit in selected_items])
+    sel = random.sample(all_items, 2)
+    combo = "、".join([f"{name}{random.randint(1, lim)}顆" for name, lim in sel])
     
     tips = {
-        "high": [f"❌ 盤面較硬，雖然出現「{combo}」，但分布太散容易咬分。", f"⚠️ 偵測到回收訊號，目前「{combo}」氣場不足。"],
+        "high": [f"❌ 盤面較硬，雖有「{combo}」，但分布太散容易咬分。", f"⚠️ 偵測到回收訊號，目前「{combo}」氣場不足。"],
         "mid": [f"⚖️ 盤面拉鋸中，若看到「{combo}」頻繁出現，可小試幾轉。", f"🔍 觀察中：目前「{combo}」頻率尚可。"],
-        "low": [f"✅ 氣場極強！盤面出現「{combo}」組合，大噴發機率攀升。", f"🔥 訊號亮起！出現「{combo}」帶動，大獎將至。"]
+        "low": [f"✅ 氣場極強！出現「{combo}」組合，大噴發機率攀升。", f"🔥 訊號亮起！出現「{combo}」帶動，大獎將至。"]
     }
     current_tip = random.choice(tips[status])
     random.seed(None)
@@ -129,7 +138,7 @@ def get_flex_card(room, n, r, b, trend_text, trend_color, seed_hash):
             {"type": "box", "layout": "vertical", "margin": "md", "contents": [
                 {"type": "text", "text": "風險指數", "size": "xs", "color": "#888888"},
                 {"type": "box", "layout": "vertical", "backgroundColor": "#EEEEEE", "height": "8px", "margin": "sm", "cornerRadius": "4px", "contents": [
-                    {"type": "box", "layout": "vertical", "width": risk_percent, "backgroundColor": base_color, "height": "8px", "cornerRadius": "4px", "contents": []}
+                    {"type": "box", "layout": "vertical", "width": risk_p, "backgroundColor": base_color, "height": "8px", "cornerRadius": "4px", "contents": []}
                 ]}
             ]},
             {"type": "text", "text": trend_text, "size": "sm", "color": trend_color, "weight": "bold"},
@@ -158,15 +167,19 @@ def sync_image_analysis(user_id, message_id, base_limit):
             files = {'filename': ('img.jpg', img_bytes, 'image/jpeg')}
             res = requests.post('https://api.ocr.space/parse/image', files=files, data=payload, timeout=15).json()
             
-            if res.get("OCRExitCode") != 1: return [TextMessage(text="❌ 辨識服務異常，請稍後。")]
+            if res.get("OCRExitCode") != 1: 
+                return [TextMessage(text="❌ 辨識服務異常，請稍後再試。")]
             
-            # 使用新版解析
             raw_text = res["ParsedResults"][0]["ParsedText"]
+            # 偵錯用 Log (可在 Render Dashboard 查看)
+            logger.info(f"OCR Raw: {raw_text}")
+            
             room, n, b, r = parse_ocr_refined(raw_text)
             
-            if r <= 0: return [TextMessage(text="❓ 辨識失敗，請確保數據區(今日)清晰無遮擋。")]
+            if r <= 0: 
+                return [TextMessage(text="❓ 辨識失敗，請確保數據區(今日)清晰無遮擋。")]
 
-            # 防重複與額度處理
+            # 資料庫處理
             today_str = get_tz_now().strftime('%Y-%m-%d')
             data_hash = f"{room}_{int(b)}_{int(r)}"
             
@@ -184,7 +197,7 @@ def sync_image_analysis(user_id, message_id, base_limit):
 
             supabase.table("usage_logs").insert({"line_user_id": user_id, "used_at": today_str, "rtp_value": r, "room_id": room, "data_hash": data_hash}).execute()
 
-            # 趨勢計算
+            # 趨勢與額度
             trend_text, trend_color = "🆕 今日首次分析", "#AAAAAA"
             last = supabase.table("usage_logs").select("rtp_value").eq("room_id", room).order("created_at", desc=True).limit(2).execute()
             if len(last.data) > 1:
@@ -193,7 +206,6 @@ def sync_image_analysis(user_id, message_id, base_limit):
                 elif diff < -0.01: trend_text, trend_color = f"❄️ 數據冷卻 ({diff:.2f}%)", "#1976D2"
                 else: trend_text, trend_color = "➡️ 數據平穩", "#555555"
 
-            # 額度計算顯示
             used_today = supabase.table("usage_logs").select("id", count="exact").eq("line_user_id", user_id).eq("used_at", today_str).execute().count or 0
             rem_base = max(0, base_limit - (used_today - 1 if is_extra_use else used_today))
 
@@ -202,9 +214,9 @@ def sync_image_analysis(user_id, message_id, base_limit):
                 TextMessage(text=f"📊 剩餘額度：{rem_base + current_extra} 次", quick_reply=get_main_menu())
             ]
         except Exception as e:
-            logger.error(f"Error: {e}"); return [TextMessage(text="分析出錯，請洽管理員。")]
+            logger.error(f"Logic Error: {e}"); return [TextMessage(text="系統繁忙中，請稍後重試。")]
 
-# === 路由與 Webhook ===
+# === LINE Webhook 處理 ===
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
